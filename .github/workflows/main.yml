@@ -3,7 +3,7 @@ name: Run Python Scraper
 on:
   workflow_dispatch:
   schedule:
-  - cron: '30 22 * * *'
+  - cron: '0 */6 * * *'
 
 jobs:
   run-scraper:
