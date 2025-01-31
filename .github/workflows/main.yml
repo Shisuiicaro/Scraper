@@ -48,27 +48,3 @@ jobs:
         git commit -m "Update shisuyssource.json [skip ci]"
         git push
       continue-on-error: true
-
-    - name: Upload shisuyssource.json
-      uses: actions/upload-artifact@v3
-      with:
-        name: shisuyssource_json
-        path: shisuyssource.json
-      continue-on-error: true
-
-    - name: Upload invalid_games.json
-      uses: actions/upload-artifact@v3
-      with:
-        name: invalid_games_json
-        path: invalid_games.json
-      continue-on-error: true
-
-    - name: Upload all files as zip
-      uses: actions/upload-artifact@v3
-      if: always()
-      with:
-        name: all_files
-        path: |
-          shisuyssource.json
-          invalid_games.json
-      continue-on-error: true
