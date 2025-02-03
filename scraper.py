@@ -105,14 +105,42 @@ async def process_page(session, page_url, semaphore, existing_data, latest_date,
     for game in game_results:
         if game and processed_games_count < MAX_GAMES:
             title, links, size, upload_date = game
-            
-            existing_games = [g for g in existing_data["downloads"] if normalize_title(g["title"]) == normalize_title(title)]
-            if existing_games:
-                existing_game = existing_games[0]
-                existing_date = datetime.fromisoformat(existing_game["uploadDate"]) if existing_game.get("uploadDate") else None
-                current_date = datetime.fromisoformat(upload_date)
-                if existing_date and current_date <= existing_date:
+            norm_title = normalize_title(title)
+            new_game_date = datetime.fromisoformat(upload_date)
+
+            # Verifica no JSON existente se já há um jogo com o mesmo título normalizado
+            existing_indices = [
+                i for i, g in enumerate(existing_data["downloads"])
+                if normalize_title(g["title"]) == norm_title
+            ]
+            if existing_indices:
+                existing_game = existing_data["downloads"][existing_indices[0]]
+                try:
+                    existing_date = datetime.fromisoformat(existing_game["uploadDate"])
+                except Exception:
+                    existing_date = None
+
+                # Se o jogo novo não for mais recente, pula sua adição
+                if existing_date and new_game_date <= existing_date:
                     continue
+                else:
+                    # Remove todas as entradas antigas com o mesmo título
+                    for index in sorted(existing_indices, reverse=True):
+                        del existing_data["downloads"][index]
+
+            # Verifica duplicatas entre os novos jogos já coletados
+            new_existing = next((g for g in new_games if normalize_title(g["title"]) == norm_title), None)
+            if new_existing:
+                try:
+                    existing_new_date = datetime.fromisoformat(new_existing["uploadDate"])
+                except Exception:
+                    existing_new_date = None
+                # Se o jogo já coletado for mais recente ou igual, pula a adição
+                if existing_new_date and new_game_date <= existing_new_date:
+                    continue
+                else:
+                    # Remove a versão antiga dos novos jogos
+                    new_games.remove(new_existing)
 
             new_game_entry = {
                 "title": title,
@@ -158,6 +186,7 @@ async def process_game(session, game_url, semaphore, latest_date):
         if any(d in href for d in ["1fichier.com", "qiwi.gg", "pixeldrain.com"]):
             links.append(href)
 
+    # Se não houver links suficientes ou se for somente o link do 1fichier, ignora
     if not links or (len(links) == 1 and "1fichier.com" in links[0]):
         return None
 
@@ -168,7 +197,9 @@ async def fetch_page(session, url, semaphore):
         try:
             async with session.get(url, headers=HEADERS, timeout=30) as response:
                 return await response.text() if response.status == 200 else None
-        except:
+        except Exception as e:
+            # Você pode descomentar a linha abaixo para debug
+            # print(f"{Fore.RED}Error fetching {url}: {str(e)}")
             return None
 
 async def scrape_games():
@@ -191,7 +222,6 @@ async def scrape_games():
             while True:
                 page_url = f"{base_url}page/{page_num}/" if page_num > 1 else base_url
                 should_continue = await process_page(session, page_url, semaphore, existing_data, latest_date, new_games)
-                
                 if not should_continue or processed_games_count >= MAX_GAMES:
                     break
                 page_num += 1
@@ -286,10 +316,12 @@ async def validate_links(session, games):
                 if size:
                     sizes.append(size)
         
+        # Se após a validação houver links válidos e não for somente o link do 1fichier
         if valid_links and not (len(valid_links) == 1 and "1fichier.com" in valid_links[0]):
             game["uris"] = valid_links
             if sizes:
-                max_size = max(sizes, key=lambda x: float(x.split()[0]) * (1024 if x.endswith('GB') else 1))
+                # Seleciona o tamanho máximo dentre os disponíveis
+                max_size = max(sizes, key=lambda x: float(x.split()[0]) * (1024 if x.upper().endswith('GB') else 1))
                 game["fileSize"] = max_size
                 print(f"{Fore.BLUE}[SIZE UPDATE] {game['title']} - Set to {max_size}")
             games_to_keep.append(game)
