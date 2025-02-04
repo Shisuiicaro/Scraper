@@ -240,12 +240,7 @@ async def validate_single_link(session, link, semaphore, game_title):
         return (None, None)
 
 async def validate_links(session, games):
-    """
-    Valida os links dos jogos recém-adicionados:
-      - Remove links inválidos.
-      - Se após a validação restar apenas um link e este for do domínio 1fichier.com,
-        o jogo é removido.
-    """
+
     semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
     print(f"\n{Fore.YELLOW}Starting link validation (somente novos jogos)...{Fore.RESET}")
     
@@ -262,20 +257,26 @@ async def validate_links(session, games):
         results = await asyncio.gather(*tasks)
         valid_links = [link for link, _ in results if link]
 
-        if len(valid_links) == 1 and "1fichier.com" in valid_links[0]:
-            print(f"{Fore.RED}[REMOVED] {game['title']} removido por possuir apenas link 1fichier.")
-        elif valid_links:
-            game["uris"] = valid_links
-            validated += len(valid_links)
+        undesired_keywords = ["torrent", "1fichier"]
+        filtered_links = [
+            link for link in valid_links
+            if not any(keyword in link.lower() for keyword in undesired_keywords)
+        ]
+
+
+        if filtered_links:
+            game["uris"] = filtered_links
+            validated += len(filtered_links)
             games_to_keep.append(game)
         else:
-            print(f"{Fore.RED}[REMOVED] {game['title']} removido por não possuir links válidos.")
+            print(f"{Fore.RED}[REMOVED] {game['title']} removido por possuir somente links indesejados.")
         
         print(f"Progress: {validated}/{total_links} links checked")
     
     print(f"\n{Fore.GREEN}Validation completed: {validated} valid links found")
     print(f"Games remaining after validation: {len(games_to_keep)}")
     return games_to_keep
+
 
 async def scrape_games():
     global processed_games_count
