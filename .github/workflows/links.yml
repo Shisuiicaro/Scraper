@@ -1,9 +1,9 @@
-name: Update Source
+name: Check all links
 
 on:
   workflow_dispatch:
   schedule:
-  - cron: '0 */4 * * *'
+  - cron: '* * */1 * *'
 
 jobs:
   run-scraper:
@@ -26,8 +26,8 @@ jobs:
         pip install -r requirements.txt
       continue-on-error: true
 
-    - name: Run scraper script
-      run: python scraper.py
+    - name: Validate Links
+      run: python validate.py
       continue-on-error: true
 
     - name: Checkout target repository
