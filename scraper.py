@@ -18,8 +18,8 @@ BASE_URLS = ["https://repack-games.com/category/" + url for url in [
 
 JSON_FILENAME = "shisuyssource.json"
 INVALID_JSON_FILENAME = "invalid_games.json"
-MAX_GAMES = 999999
-CONCURRENT_REQUESTS = 100
+MAX_GAMES = 1000
+CONCURRENT_REQUESTS = 2000
 REGEX_TITLE = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -126,19 +126,6 @@ async def fetch_game_details(session, game_url, semaphore):
     soup = BeautifulSoup(page_content, 'html.parser')
     title = soup.find('h1', class_='entry-title').get_text(strip=True) if soup.find('h1', class_='entry-title') else "Unknown Title"
 
-    size = "Undefined"
-    size_patterns = [
-        r"(\d+(\.\d+)?)\s*(GB|MB)\s+available space",
-        r"Storage:\s*(\d+(\.\d+)?)\s*(GB|MB)"
-    ]
-    for pattern in size_patterns:
-        match = re.search(pattern, page_content, re.IGNORECASE)
-        if match:
-            size_value = match.group(1)
-            size_unit = match.group(3).upper()
-            size = f"{size_value} {size_unit}"
-            break
-
     date_element = soup.select_one('.time-article.updated a')
     if date_element and date_element.text.strip():
         relative_date_str = date_element.text.strip()
@@ -149,7 +136,7 @@ async def fetch_game_details(session, game_url, semaphore):
     all_links = []
     for tag in soup.find_all('a', href=True):
         href = tag['href']
-        if any(domain in href for domain in ["1fichier.com", "qiwi.gg", "pixeldrain.com"]):
+        if any(domain in href for domain in ["1fichier.com", "qiwi.gg", "pixeldrain.com", "mediafire.com", "gofile.io"]):
             all_links.append(href)
 
     filtered_links = {}
@@ -161,16 +148,17 @@ async def fetch_game_details(session, game_url, semaphore):
             domain = "qiwi"
         elif "pixeldrain.com" in link:
             domain = "pixeldrain"
+        elif "mediafire.com" in link:
+            domain = "mediafire"
+        elif "gofile.io" in link:
+            domain = "gofile"
 
         if domain and domain not in filtered_links:
             filtered_links[domain] = link
 
     download_links = list(filtered_links.values())
 
-    if len(download_links) == 1 and "1fichier.com" in download_links[0]:
-        return title, size, [], upload_date
-
-    return title, size, download_links, upload_date
+    return title, "", download_links, upload_date
 
 async def fetch_last_page_num(session, semaphore, base_url):
     page_content = await fetch_page(session, base_url, semaphore)
@@ -184,6 +172,14 @@ async def fetch_last_page_num(session, semaphore, base_url):
         if match:
             return int(match.group(1))
     return 1
+
+def normalize_special_titles(title):
+    """Normalize special game titles"""
+    if title == "The Headliners":
+        return "Headliners"
+    if "0xdeadcode" in title:
+        return title.replace("0xdeadcode", " +online-fix")
+    return title
 
 async def process_page(session, page_url, semaphore, existing_data, page_num):
     global processed_games_count
@@ -224,6 +220,8 @@ async def process_page(session, page_url, semaphore, existing_data, page_num):
             break
 
         title, size, links, upload_date = game
+
+        title = normalize_special_titles(title)
         if not links:
             log_game_status("NO_LINKS", page_num, title)
             continue
@@ -234,25 +232,21 @@ async def process_page(session, page_url, semaphore, existing_data, page_num):
             continue
 
         title_normalized = normalize_title(title)
-        # Find all games with the same normalized title
         same_games = [g for g in existing_data["downloads"] if normalize_title(g["title"]) == title_normalized]
         
         if same_games:
-            # Sort by upload date, most recent first
             same_games.sort(key=lambda x: x.get("uploadDate", ""), reverse=True)
             most_recent = same_games[0]
             
-            # If current game is newer, update the most recent entry
             if upload_date and upload_date > most_recent.get("uploadDate", ""):
                 most_recent.update({
                     "title": title,
                     "uris": links,
-                    "fileSize": size,
+                    "fileSize": "",
                     "uploadDate": upload_date
                 })
                 log_game_status("UPDATED", page_num, title)
                 
-                # Remove other versions of the same game
                 existing_data["downloads"] = [g for g in existing_data["downloads"] 
                                            if normalize_title(g["title"]) != title_normalized or g == most_recent]
             else:
@@ -261,145 +255,10 @@ async def process_page(session, page_url, semaphore, existing_data, page_num):
             existing_data["downloads"].append({
                 "title": title,
                 "uris": links,
-                "fileSize": size,
+                "fileSize": "",
                 "uploadDate": upload_date
             })
             log_game_status("NEW", page_num, title)
-
-async def get_file_size(session, link, headers, timeout):
-    try:
-        async with session.head(link, headers=headers, timeout=timeout) as response:
-            if response.status == 200:
-                content_length = response.headers.get('content-length')
-                if (content_length):
-                    size_bytes = int(content_length)
-                    if size_bytes > 1073741824:
-                        return f"{size_bytes / 1073741824:.2f} GB"
-                    else:
-                        return f"{size_bytes / 1048576:.2f} MB"
-    except:
-        pass
-    return None
-
-async def validate_single_link(session, link, semaphore, game_title):
-    try:
-        async with semaphore:
-            timeout = aiohttp.ClientTimeout(total=30)
-            
-            if "pixeldrain.com" in link:
-                file_id = link.split('/')[-1]
-                api_url = f"https://pixeldrain.com/api/file/{file_id}/info"
-                
-                try:
-                    async with session.get(api_url, headers=HEADERS, timeout=timeout) as response:
-                        if response.status == 200:
-                            json_data = await response.json()
-                            
-                            if json_data.get('name', '').lower().endswith(('.torrent', '.magnet')):
-                                print(f"{Fore.RED}[TORRENT DETECTED] {game_title}: {link}")
-                                return (None, None)
-                                
-                            if 'size' in json_data:
-                                size_bytes = int(json_data['size'])
-                                if size_bytes > 1073741824:
-                                    file_size = f"{size_bytes / 1073741824:.2f} GB"
-                                else:
-                                    file_size = f"{size_bytes / 1048576:.2f} MB"
-                                print(f"{Fore.GREEN}[VALID - Size: {file_size}] {game_title} - pixeldrain: {link}")
-                                return (link, file_size)
-                except Exception as e:
-                    print(f"{Fore.YELLOW}[DEBUG] Pixeldrain API error: {str(e)}")
-            
-            async with session.get(link, headers=HEADERS, timeout=timeout) as response:
-                if response.status != 200:
-                    print(f"{Fore.RED}[INVALID] {game_title} - Status {response.status}: {link}")
-                    return (None, None)
-                
-                result = await response.text()
-                soup = BeautifulSoup(result, 'html.parser')
-                
-                if any(text in result.lower() for text in [
-                    "file could not be found",
-                    "unavailable for legal reasons",
-                    "unavailable",
-                    "qbittorrent",
-                    "torrent",
-                    "magnet:",
-                    ".torrent"
-                ]):
-                    print(f"{Fore.RED}[INVALID/TORRENT] {game_title}: {link}")
-                    return (None, None)
-
-                file_size = None
-                
-                if "qiwi.gg" in link:
-                    download_span = soup.find('span', string=re.compile(r'Download \d+'))
-                    if download_span:
-                        size_match = re.search(r'(\d+\.?\d*)\s*(GB|MB|KB)', download_span.text)
-                        if size_match:
-                            file_size = f"{size_match.group(1)} {size_match.group(2)}"
-
-                domain = "1fichier" if "1fichier.com" in link else "qiwi" if "qiwi.gg" in link else "pixeldrain"
-                size_info = f" - Size: {file_size}" if file_size else ""
-                print(f"{Fore.GREEN}[VALID{size_info}] {game_title} - {domain}: {link}")
-                
-                return (link, file_size)
-
-    except Exception as e:
-        print(f"{Fore.RED}[ERROR] {game_title} - {link}: {str(e)}")
-        return (None, None)
-
-async def validate_links(session, games):
-    semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
-    print(f"\n{Fore.YELLOW}Starting link validation...{Fore.RESET}")
-    
-    games_to_keep = []
-    total_links = sum(len(game["uris"]) for game in games)
-    validated = 0
-    
-    for game in games:
-        if not game["uris"]:
-            save_invalid_game(game["title"], "No links available")
-            continue
-            
-        print(f"\n{Fore.CYAN}Validating: {game['title']}{Fore.RESET}")
-        tasks = [validate_single_link(session, link, semaphore, game['title']) for link in game["uris"]]
-        results = await asyncio.gather(*tasks)
-        
-        valid_links = []
-        invalid_links = []
-        sizes = []
-        
-        for link, size in results:
-            if link:
-                valid_links.append(link)
-                if size:
-                    sizes.append(size)
-            else:
-                invalid_links.append(link)
-        
-        if valid_links and not (len(valid_links) == 1 and "1fichier.com" in valid_links[0]):
-            game["uris"] = valid_links
-            if sizes:
-                max_size = max(sizes, key=lambda x: float(x.split()[0]) * (1024 if x.endswith('GB') else 1))
-                game["fileSize"] = max_size
-                print(f"{Fore.BLUE}[SIZE UPDATE] {game['title']} - Set to {max_size}")
-            games_to_keep.append(game)
-            validated += len(valid_links)
-        else:
-            reason = "Only 1fichier links" if (len(valid_links) == 1 and "1fichier.com" in valid_links[0]) else "All links invalid"
-            save_invalid_game(game["title"], reason, {
-                "valid_links": valid_links,
-                "invalid_links": invalid_links,
-                "original_links": game["uris"]
-            })
-            print(f"{Fore.RED}[REMOVED] {game['title']} - {reason}")
-        
-        print(f"Progress: {validated}/{total_links} links checked")
-    
-    games[:] = games_to_keep
-    print(f"\n{Fore.GREEN}Validation completed: {validated} valid links found")
-    print(f"Games remaining after validation: {len(games_to_keep)}")
 
 async def cleanup():
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
@@ -407,19 +266,6 @@ async def cleanup():
         task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
-
-def compare_sizes(size1, size2):
-    size1_value, size1_unit = size1.split()
-    size2_value, size2_unit = size2.split()
-    size1_value = float(size1_value)
-    size2_value = float(size2_value)
-    if size1_unit == size2_unit:
-        return size1_value - size2_value
-    elif size1_unit == "GB" and size2_unit == "MB":
-        return size1_value - (size2_value / 1024)
-    elif size1_unit == "MB" and size2_unit == "GB":
-        return (size1_value / 1024) - size2_value
-    return 0
 
 async def scrape_games():
     global processed_games_count
@@ -442,8 +288,6 @@ async def scrape_games():
                 except GameLimitReached:
                     break
 
-            await validate_links(session, existing_data["downloads"])
-            
             save_data(JSON_FILENAME, existing_data)
             print(f"\nScraping finished. Total games processed: {processed_games_count}")
     
