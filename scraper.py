@@ -13,7 +13,8 @@ BASE_URLS = ["https://repack-games.com/category/" + url for url in [
     "building-games/", "exploration/", "multiplayer-games/", "open-world-game/",
     "fighting-games/", "horror-games/", "racing-game/", "shooting-games/",
     "rpg-pc-games/", "puzzle/", "sport-game/", "survival-games/",
-    "simulation-game/", "strategy-games/", "sci-fi-games/", "adult/"
+    "simulation-game/", "strategy-games/", "sci-fi-games/", "emulator-games/", , "vr-games/"
+    "nudity/"
 ]]
 
 JSON_FILENAME = "shisuyssource.json"
@@ -84,25 +85,15 @@ def load_invalid_games():
         with open(INVALID_JSON_FILENAME, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {
-            "updated": datetime.now().isoformat(),
-            "invalid_games": []
-        }
+        return {"updated": datetime.now().isoformat(), "invalid_games": []}
 
 def save_invalid_game(title, reason, links=None):
     invalid_data = load_invalid_games()
     invalid_data["updated"] = datetime.now().isoformat()
-    
-    invalid_game = {
-        "title": title,
-        "reason": reason,
-        "date": datetime.now().isoformat()
-    }
+    invalid_game = {"title": title, "reason": reason, "date": datetime.now().isoformat()}
     if links:
         invalid_game["links"] = links
-        
     invalid_data["invalid_games"].append(invalid_game)
-    
     with open(INVALID_JSON_FILENAME, 'w', encoding='utf-8') as f:
         json.dump(invalid_data, f, ensure_ascii=False, indent=4)
 
@@ -118,6 +109,25 @@ async def fetch_page(session, url, semaphore):
             print(f"Error fetching {url}: {str(e)}")
             return None
 
+def mark_special_categories(title, url):
+    if "emulator-games" in url.lower() and not any(x in title.lower() for x in ["emulator", "emu", "(emu)"]):
+        title = f"{title} (Emulator)"
+    if "multiplayer-games" in url.lower() and not any(x in title.lower() for x in ["multiplayer", "multi", "(mp)"]):
+        title = f"{title} (Multiplayer)"
+    if "vr-games" in url.lower() and not any(x in title.lower() for x in ["vr", "(vr)", "virtual reality"]):
+        title = f"{title} (VR)"
+    return title
+
+def normalize_special_titles(title):
+    if title == "The Headliners":
+        return "Headliners"
+    if "0xdeadcode" in title:
+        return title.replace("0xdeadcode", "Multiplayer")
+    return title
+
+def is_deadcode_version(title):
+    return "0xdeadcode" in title.lower()
+
 async def fetch_game_details(session, game_url, semaphore):
     page_content = await fetch_page(session, game_url, semaphore)
     if not page_content:
@@ -125,6 +135,8 @@ async def fetch_game_details(session, game_url, semaphore):
 
     soup = BeautifulSoup(page_content, 'html.parser')
     title = soup.find('h1', class_='entry-title').get_text(strip=True) if soup.find('h1', class_='entry-title') else "Unknown Title"
+    
+    title = mark_special_categories(title, game_url)
 
     date_element = soup.select_one('.time-article.updated a')
     if date_element and date_element.text.strip():
@@ -172,14 +184,6 @@ async def fetch_last_page_num(session, semaphore, base_url):
         if match:
             return int(match.group(1))
     return 1
-
-def normalize_special_titles(title):
-    """Normalize special game titles"""
-    if title == "The Headliners":
-        return "Headliners"
-    if "0xdeadcode" in title:
-        return title.replace("0xdeadcode", " +online-fix")
-    return title
 
 async def process_page(session, page_url, semaphore, existing_data, page_num):
     global processed_games_count
@@ -235,10 +239,15 @@ async def process_page(session, page_url, semaphore, existing_data, page_num):
         same_games = [g for g in existing_data["downloads"] if normalize_title(g["title"]) == title_normalized]
         
         if same_games:
-            same_games.sort(key=lambda x: x.get("uploadDate", ""), reverse=True)
+            same_games.sort(key=lambda x: (is_deadcode_version(x["title"]), x.get("uploadDate", "")), reverse=True)
             most_recent = same_games[0]
             
-            if upload_date and upload_date > most_recent.get("uploadDate", ""):
+            should_update = (
+                (is_deadcode_version(title) and not is_deadcode_version(most_recent["title"])) or
+                (upload_date and upload_date > most_recent.get("uploadDate", ""))
+            )
+            
+            if should_update:
                 most_recent.update({
                     "title": title,
                     "uris": links,
