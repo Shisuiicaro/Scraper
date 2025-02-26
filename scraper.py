@@ -13,7 +13,7 @@ BASE_URLS = ["https://repack-games.com/category/" + url for url in [
     "building-games/", "exploration/", "multiplayer-games/", "open-world-game/",
     "fighting-games/", "horror-games/", "racing-game/", "shooting-games/",
     "rpg-pc-games/", "puzzle/", "sport-game/", "survival-games/",
-    "simulation-game/", "strategy-games/", "sci-fi-games/", "emulator-games/", , "vr-games/"
+    "simulation-game/", "strategy-games/", "sci-fi-games/", "emulator-games/", "vr-games/"
     "nudity/"
 ]]
 
