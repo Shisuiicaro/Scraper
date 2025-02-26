@@ -94,6 +94,7 @@ async def validate_gofile_link(session, link):
         return None, ""
 
 async def fetch_json(session):
+
     async with session.get(REMOTE_JSON_URL, headers=HEADERS) as response:
         if response.status != 200:
             print(f"{Fore.RED}Erro ao buscar JSON: Status {response.status}")
@@ -104,6 +105,7 @@ async def fetch_json(session):
         except json.JSONDecodeError as e:
             print(f"{Fore.RED}Erro na conversão do JSON: {e}")
             return None
+
 
 def extract_mediafire_key(url):
     if "file/" in url:
@@ -233,8 +235,10 @@ async def validate_single_link(session, link, semaphore):
             async with session.get(link, headers=HEADERS, timeout=timeout) as response:
                 if response.status != 200:
                     print(f"{Fore.RED}[INVALID] {link} (Status {response.status})")
+
                     return None, ""
                     
+
                 content = await response.text()
                 error_indicators = [
                     "file could not be found",
@@ -242,6 +246,7 @@ async def validate_single_link(session, link, semaphore):
                     "unavailable",
                     "torrent",
                     "magnet:",
+
                     ".torrent",
                     "file has been deleted",
                     "file does not exist",
@@ -308,6 +313,7 @@ async def validate_all_links():
             print(f"{Fore.GREEN}JSON atualizado com sucesso")
     finally:
         driver_pool.cleanup()
+
 
 def main():
     asyncio.run(validate_all_links())
