@@ -2,6 +2,7 @@ import aiohttp
 import asyncio
 import json
 import requests
+import re  # Add missing import
 from colorama import Fore, init
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -26,94 +27,6 @@ HEADERS = {
 }
 
 GOFILE_WT = "4fd6sg89d7s6"
-
-async def get_gofile_token(session):
-    async with session.post("https://api.gofile.io/accounts") as response:
-        if response.status != 200:
-            return None
-            
-        data = await response.json()
-        if data.get("status") == "ok":
-            return data["data"]["token"]
-    return None
-
-async def validate_gofile_link(session, link):
-    try:
-        gofile_id = link.split("/")[-1]
-        
-        token = await get_gofile_token(session)
-        if not token:
-            print(f"{Fore.RED}[ERROR] Falha ao obter token do Gofile")
-            return None
-
-        params = {"wt": GOFILE_WT}
-        headers = {"Authorization": f"Bearer {token}"}
-        
-        await asyncio.sleep(0.5)
-        
-        async with session.get(
-            f"https://api.gofile.io/contents/{gofile_id}",
-            params=params,
-            headers=headers
-        ) as response:
-            if response.status != 200:
-                print(f"{Fore.RED}[INVALID] {link} (Status: {response.status})")
-                return None
-                
-            data = await response.json()
-            if data.get("status") != "ok":
-                print(f"{Fore.RED}[INVALID] {link} (API Error)")
-                return None
-
-            content_data = data.get("data", {})
-            children = content_data.get("children", {})
-            
-            if not children:
-                print(f"{Fore.RED}[INVALID] {link} (Pasta vazia)")
-                return None
-                
-            if len(children) > 1:
-                print(f"{Fore.YELLOW}[WARNING] {link} (Múltiplos arquivos)")
-                
-            for child in children.values():
-                if any(ext in child.get("name", "").lower() for ext in [".torrent", "magnet"]):
-                    print(f"{Fore.RED}[INVALID] {link} (Torrent detectado)")
-                    return None
-            
-            total_size = sum(int(child.get("size", 0)) for child in children.values())
-            formatted_size = format_size(total_size)
-            print(f"{Fore.GREEN}[VALID] {link} ({formatted_size})")
-            return link, formatted_size
-
-    except Exception as e:
-        print(f"{Fore.RED}[ERROR] Falha ao validar {link}: {e}")
-        return None, ""
-
-async def fetch_json(session):
-
-    async with session.get(REMOTE_JSON_URL, headers=HEADERS) as response:
-        if response.status != 200:
-            print(f"{Fore.RED}Erro ao buscar JSON: Status {response.status}")
-            return None
-        text = await response.text()
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError as e:
-            print(f"{Fore.RED}Erro na conversão do JSON: {e}")
-            return None
-
-
-def extract_mediafire_key(url):
-    if "file/" in url:
-        return url.split("file/")[1].split("/")[0]
-    return None
-
-def extract_download_link(content):
-    for line in content.splitlines():
-        m = re.search(r'href="((http|https)://download[^"]+)', line)
-        if m:
-            return m.groups()[0]
-    return None
 
 class DriverPool:
     def __init__(self, size=3):
@@ -144,6 +57,19 @@ class DriverPool:
 
 driver_pool = DriverPool(size=3)
 
+def extract_mediafire_key(url):
+    """Extract the file key from a MediaFire URL."""
+    try:
+        # Handle both formats:
+        # https://www.mediafire.com/file/KEY/filename/file
+        # https://www.mediafire.com/file/KEY
+        if "/file/" in url:
+            parts = url.split("/file/")[1].split("/")
+            return parts[0]
+    except Exception:
+        pass
+    return None
+
 def check_mediafire_link(link):
     driver = driver_pool.get_driver()
     try:
@@ -165,11 +91,65 @@ def check_mediafire_link(link):
     finally:
         driver_pool.return_driver(driver)
 
-def format_size(size_bytes):
-    if size_bytes > 1024 * 1024 * 1024:
-        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
-    else:
-        return f"{size_bytes / (1024 * 1024):.2f} MB"
+def check_gofile_link(link):
+    driver = driver_pool.get_driver()
+    try:
+        driver.set_page_load_timeout(10)
+        driver.get(link)
+        
+        try:
+            WebDriverWait(driver, 5).until(
+                lambda d: d.title and len(d.title) > 0
+            )
+        except TimeoutException:
+            return None
+            
+        # Check if the page has content or shows errors
+        error_texts = [
+            "File not found",
+            "404",
+            "Access denied",
+            "File has been deleted"
+        ]
+        
+        page_source = driver.page_source.lower()
+        if any(error in page_source.lower() for error in error_texts):
+            return None
+            
+        # Try to get file size from page
+        try:
+            size_element = WebDriverWait(driver, 3).until(
+                lambda d: d.find_element("class name", "file-size")
+            )
+            file_size = size_element.text
+        except:
+            file_size = ""
+            
+        return link, file_size
+        
+    except Exception as e:
+        print(f"{Fore.RED}[ERROR] Falha ao validar {link}: {e}")
+        return None
+    finally:
+        driver_pool.return_driver(driver)
+
+async def validate_gofile_link(session, link):
+    try:
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            result = await loop.run_in_executor(executor, check_gofile_link, link)
+            
+            if result:
+                link, size = result
+                print(f"{Fore.GREEN}[VALID] {link} ({size})")
+                return link, size
+            else:
+                print(f"{Fore.RED}[INVALID] {link}")
+                return None, ""
+                
+    except Exception as e:
+        print(f"{Fore.RED}[ERROR] Falha ao validar {link}: {e}")
+        return None, ""
 
 async def validate_mediafire_link(session, link):
     quick_key = extract_mediafire_key(link)
@@ -260,6 +240,18 @@ async def validate_single_link(session, link, semaphore):
     except Exception as e:
         print(f"{Fore.RED}[ERROR] Falha ao validar {link}: {e}")
         return None, ""
+
+async def fetch_json(session):
+    async with session.get(REMOTE_JSON_URL, headers=HEADERS) as response:
+        if response.status != 200:
+            print(f"{Fore.RED}Erro ao buscar JSON: Status {response.status}")
+            return None
+        text = await response.text()
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            print(f"{Fore.RED}Erro na conversão do JSON: {e}")
+            return None
 
 async def validate_all_links():
     try:

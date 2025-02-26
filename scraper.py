@@ -17,11 +17,10 @@ BASE_URLS = ["https://repack-games.com/category/" + url for url in [
     "nudity/"
 ]]
 
-
 JSON_FILENAME = "shisuyssource.json"
 INVALID_JSON_FILENAME = "invalid_games.json"
-MAX_GAMES = 99999999
-
+MAX_GAMES = 20
+CONCURRENT_REQUESTS = 2000
 REGEX_TITLE = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -33,34 +32,11 @@ HEADERS = {
 
 processed_games_count = 0
 
+class GameLimitReached(Exception):
+    pass
+
 def normalize_title(title):
     return re.sub(REGEX_TITLE, "", title).strip()
-
-async def load_existing_data(session):
-    try:
-        async with session.get(REMOTE_JSON_URL, headers=HEADERS) as response:
-            text = await response.text()
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError as e:
-                print(f"{Fore.RED}JSON decoding error: {e}")
-                return {"name": "Shisuy's source", "downloads": []}
-    except Exception as e:
-        print(f"{Fore.RED}Connection error: {e}")
-        return {"name": "Shisuy's source", "downloads": []}
-
-def get_latest_date(existing_data):
-    latest_date = None
-    for game in existing_data.get("downloads", []):
-        date_str = game.get("uploadDate")
-        if date_str:
-            try:
-                game_date = datetime.fromisoformat(date_str)
-                if not latest_date or game_date > latest_date:
-                    latest_date = game_date
-            except ValueError:
-                continue
-    return latest_date
 
 def save_data(json_filename, data):
     with open(json_filename, "w", encoding="utf-8") as json_file:
@@ -69,21 +45,21 @@ def save_data(json_filename, data):
 def parse_relative_date(date_str):
     now = datetime.now()
     try:
-        num = int(re.search(r'(\d+)', date_str).group(1))
         if "hour" in date_str:
-            return (now - timedelta(hours=num)).isoformat()
+            result_date = now - timedelta(hours=int(re.search(r'(\d+)', date_str).group(1)))
         elif "day" in date_str:
-            return (now - timedelta(days=num)).isoformat()
+            result_date = now - timedelta(days=int(re.search(r'(\d+)', date_str).group(1)))
         elif "week" in date_str:
-            return (now - timedelta(weeks=num)).isoformat()
+            result_date = now - timedelta(weeks=int(re.search(r'(\d+)', date_str).group(1)))
         elif "month" in date_str:
-            return (now - timedelta(days=30*num)).isoformat()
+            result_date = now - timedelta(days=30 * int(re.search(r'(\d+)', date_str).group(1)))
         elif "year" in date_str:
-            return (now - timedelta(days=365*num)).isoformat()
+            result_date = now - timedelta(days=365 * int(re.search(r'(\d+)', date_str).group(1)))
+        else:
+            return now.isoformat()
+        return result_date.isoformat()
+    except Exception:
         return now.isoformat()
-    except:
-        return now.isoformat()
-
 
 def log_game_status(status, page, game_title):
     global processed_games_count
@@ -114,13 +90,16 @@ def save_invalid_game(title, reason, links=None):
     with open(INVALID_JSON_FILENAME, 'w', encoding='utf-8') as f:
         json.dump(invalid_data, f, ensure_ascii=False, indent=4)
 
-
 async def fetch_page(session, url, semaphore):
     async with semaphore:
         try:
-            async with session.get(url, headers=HEADERS, timeout=30) as response:
-                return await response.text() if response.status == 200 else None
-        except Exception:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with session.get(url, headers=HEADERS, timeout=timeout) as response:
+                if response.status == 200:
+                    return await response.text()
+                return None
+        except Exception as e:
+            print(f"Error fetching {url}: {str(e)}")
             return None
 
 def mark_special_categories(title, url):
@@ -145,10 +124,9 @@ def is_deadcode_version(title):
 async def fetch_game_details(session, game_url, semaphore):
     page_content = await fetch_page(session, game_url, semaphore)
     if not page_content:
-        return None
+        return None, None, [], None
 
     soup = BeautifulSoup(page_content, 'html.parser')
-
     title = soup.find('h1', class_='entry-title').get_text(strip=True) if soup.find('h1', class_='entry-title') else "Unknown Title"
     
     title = mark_special_categories(title, game_url)
@@ -192,29 +170,40 @@ async def fetch_last_page_num(session, semaphore, base_url):
     if not page_content:
         return 1
 
+    soup = BeautifulSoup(page_content, 'html.parser')
+    last_page_tag = soup.find('a', class_='last', string='Last »')
+    if last_page_tag:
+        match = re.search(r'page/(\d+)', last_page_tag['href'])
+        if match:
+            return int(match.group(1))
+    return 1
 
-    if not links or (len(links) == 1 and "1fichier.com" in links[0]):
-        return None
-
-    return (title, links, size, upload_date)
-
-async def process_page(session, page_url, semaphore, existing_data, latest_date, new_games):
+async def process_page(session, page_url, semaphore, data, page_num):
     global processed_games_count
+    if processed_games_count >= MAX_GAMES:
+        raise GameLimitReached()
+
     page_content = await fetch_page(session, page_url, semaphore)
     if not page_content:
-        return False
+        return
 
     soup = BeautifulSoup(page_content, 'html.parser')
     articles = soup.find_all('div', class_='articles-content')
     if not articles:
-        return True
+        return
 
-    has_new_games = False
+    remaining_games = MAX_GAMES - processed_games_count
     tasks = []
+    
     for article in articles:
+        if len(tasks) >= remaining_games:
+            break
+        
         for li in article.find_all('li'):
+            if len(tasks) >= remaining_games:
+                break
+                
             a_tag = li.find('a', href=True)
-
             if a_tag and 'href' in a_tag.attrs:
                 tasks.append(fetch_game_details(session, a_tag['href'], semaphore))
 
@@ -247,45 +236,14 @@ async def process_page(session, page_url, semaphore, existing_data, latest_date,
             print(f"Ignoring game with title: {title}")
             continue
 
-        title_normalized = normalize_title(title)
-        same_games = [g for g in existing_data["downloads"] if normalize_title(g["title"]) == title_normalized]
-        
-        if same_games:
-            same_games.sort(key=lambda x: (is_deadcode_version(x["title"]), x.get("uploadDate", "")), reverse=True)
-            most_recent = same_games[0]
-            
-            should_update = (
-                (is_deadcode_version(title) and not is_deadcode_version(most_recent["title"])) or
-                (upload_date and upload_date > most_recent.get("uploadDate", ""))
-            )
-            
-            if should_update:
-                most_recent.update({
-                    "title": title,
-                    "uris": links,
-                    "fileSize": "",
-                    "uploadDate": upload_date
-                })
-                log_game_status("UPDATED", page_num, title)
-                
-                existing_data["downloads"] = [g for g in existing_data["downloads"] 
-                                           if normalize_title(g["title"]) != title_normalized or g == most_recent]
-            else:
-                log_game_status("IGNORED", page_num, title)
-        else:
-            existing_data["downloads"].append({
-
-                "title": title,
-                "uris": links,
-                "fileSize": "",
-                "uploadDate": upload_date
-            }
-            existing_data["downloads"].append(new_game_entry)
-            new_games.append(new_game_entry)
-            processed_games_count += 1
-            has_new_games = True
-            print(f"{Fore.GREEN}[NEW] {title} - Total: {processed_games_count}")
-
+        # Add game directly without checking for duplicates
+        data["downloads"].append({
+            "title": title,
+            "uris": links,
+            "fileSize": "",
+            "uploadDate": upload_date
+        })
+        log_game_status("NEW", page_num, title)
 
 async def cleanup():
     tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
@@ -294,32 +252,33 @@ async def cleanup():
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
-
 async def scrape_games():
     global processed_games_count
     semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
     
-    async with aiohttp.ClientSession() as session:
-        existing_data = await load_existing_data(session)
-        latest_date = get_latest_date(existing_data)
-        print(f"{Fore.CYAN}Latest known game date: {latest_date}")
-        
-        new_games = []
+    # Initialize fresh data dictionary
+    data = {
+        "name": "Shisuy's source",
+        "downloads": []
+    }
 
-        for base_url in BASE_URLS:
-            if processed_games_count >= MAX_GAMES:
-                break
-                
-            print(f"{Fore.MAGENTA}\nProcessing category: {base_url}")
-            page_num = 1
-            while True:
-                page_url = f"{base_url}page/{page_num}/" if page_num > 1 else base_url
-                should_continue = await process_page(session, page_url, semaphore, existing_data, latest_date, new_games)
-                if not should_continue or processed_games_count >= MAX_GAMES:
+    try:
+        async with aiohttp.ClientSession() as session:
+            for base_url in BASE_URLS:
+                if processed_games_count >= MAX_GAMES:
                     break
-                page_num += 1
+                    
+                try:
+                    last_page_num = await fetch_last_page_num(session, semaphore, base_url)
+                    for page_num in range(1, last_page_num + 1):
+                        if processed_games_count >= MAX_GAMES:
+                            break
+                        page_url = f"{base_url}/page/{page_num}"
+                        await process_page(session, page_url, semaphore, data, page_num)
+                except GameLimitReached:
+                    break
 
-            save_data(JSON_FILENAME, existing_data)
+            save_data(JSON_FILENAME, data)
             print(f"\nScraping finished. Total games processed: {processed_games_count}")
     
     except Exception as e:
@@ -327,9 +286,28 @@ async def scrape_games():
     finally:
         await cleanup()
 
-
 def main():
-    asyncio.run(scrape_games())
-
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        loop.run_until_complete(scrape_games())
+    except KeyboardInterrupt:
+        print("\nScript interrupted by user.")
+    except Exception as e:
+        print(f"\nUnexpected error: {str(e)}")
+    finally:
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        
+        try:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        except Exception:
+            pass
+            
+        loop.close()
+        print("Script terminated.")
+        
 if __name__ == "__main__":
     main()
