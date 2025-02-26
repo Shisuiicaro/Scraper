@@ -35,7 +35,7 @@ jobs:
     - name: Checkout target repository
       uses: actions/checkout@v3
       with:
-        repository: Shisuiicaro/scraper
+        repository: Shisuiicaro/Scraper
         path: target-repo
         token: ${{ secrets.GH_TOKEN }}
         ref: update
