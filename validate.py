@@ -176,7 +176,15 @@ async def validate_gofile_link(session, link):
                 print(f"{Fore.RED}[INVALID] {link} (Sem conteúdo)")
                 return None, ""
 
-            total_size = sum(int(child.get("size", 0)) for child in content_data.get("children", {}).values())
+            # Check for .torrent files in names
+            children = content_data.get("children", {}).values()
+            for child in children:
+                name = child.get("name", "").lower()
+                if ".torrent" in name:
+                    print(f"{Fore.RED}[INVALID] {link} (Arquivo torrent detectado)")
+                    return None, ""
+
+            total_size = sum(int(child.get("size", 0)) for child in children)
             if total_size == 0:
                 print(f"{Fore.RED}[INVALID] {link} (Tamanho zero)")
                 return None, ""
