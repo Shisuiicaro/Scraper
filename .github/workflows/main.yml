@@ -1,9 +1,7 @@
 name: Update Source
 
 on:
-  workflow_dispatch:
-  schedule:
-  - cron: '0 */4 * * *'
+  workflow_dispatch
 
 jobs:
   run-scraper:
@@ -33,9 +31,10 @@ jobs:
     - name: Checkout target repository
       uses: actions/checkout@v3
       with:
-        repository: Shisuiicaro/source
+        repository: Shisuiicaro/Scraper
         path: target-repo
         token: ${{ secrets.GH_TOKEN }}
+        ref: update
       continue-on-error: true
 
     - name: Copy and commit files
@@ -46,5 +45,5 @@ jobs:
         git config user.email "action@github.com"
         git add shisuyssource.json
         git commit -m "Update shisuyssource.json [skip ci]"
-        git push
+        git push origin update
       continue-on-error: true
