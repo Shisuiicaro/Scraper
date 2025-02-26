@@ -217,13 +217,21 @@ async def process_page(session, page_url, semaphore, existing_data, page_num):
     games = await asyncio.gather(*tasks, return_exceptions=True)
     for game in games:
         if isinstance(game, Exception):
-            print(f"Exception occurred while fetching game details: {game}")
+            print(f"{Fore.RED}Exception occurred while fetching game details: {game}")
+            continue
+            
+        if game is None or not isinstance(game, tuple) or len(game) != 4:
+            print(f"{Fore.RED}Invalid game data received")
             continue
 
         if processed_games_count >= MAX_GAMES:
             break
 
         title, size, links, upload_date = game
+
+        if not title:  # Add check for None/empty title
+            print(f"{Fore.RED}[ERROR] Game with empty title skipped")
+            continue
 
         title = normalize_special_titles(title)
         if not links:
