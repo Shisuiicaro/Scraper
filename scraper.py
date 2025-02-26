@@ -19,7 +19,7 @@ BASE_URLS = ["https://repack-games.com/category/" + url for url in [
 
 JSON_FILENAME = "shisuyssource.json"
 INVALID_JSON_FILENAME = "invalid_games.json"
-MAX_GAMES = 20
+MAX_GAMES = 99999999
 CONCURRENT_REQUESTS = 2000
 REGEX_TITLE = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 HEADERS = {
@@ -252,11 +252,55 @@ async def cleanup():
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
+# Ajuste estes valores conforme necessário
+CATEGORY_SEMAPHORE_LIMIT = 3  # Número de categorias em paralelo
+PAGE_SEMAPHORE_LIMIT = 30      # Número de páginas por categoria em paralelo
+GAME_SEMAPHORE_LIMIT = 60     # Número de jogos em paralelo por página
+
+async def process_category(session, base_url, data, page_semaphore, game_semaphore):
+    global processed_games_count
+    
+    if processed_games_count >= MAX_GAMES:
+        return
+
+    try:
+        last_page_num = await fetch_last_page_num(session, game_semaphore, base_url)
+        page_tasks = []
+        
+        # Cria lista de páginas a processar
+        pages = list(range(1, min(last_page_num + 1, 10)))  # Limita a 10 páginas por categoria
+        
+        # Processa páginas em paralelo
+        for i in range(0, len(pages), PAGE_SEMAPHORE_LIMIT):
+            batch = pages[i:i + PAGE_SEMAPHORE_LIMIT]
+            tasks = []
+            
+            for page_num in batch:
+                if processed_games_count >= MAX_GAMES:
+                    break
+                    
+                page_url = f"{base_url}/page/{page_num}"
+                tasks.append(process_page(session, page_url, game_semaphore, data, page_num))
+            
+            if tasks:
+                await asyncio.gather(*tasks)
+                
+            if processed_games_count >= MAX_GAMES:
+                break
+
+    except GameLimitReached:
+        return
+    except Exception as e:
+        print(f"Error processing category {base_url}: {str(e)}")
+
 async def scrape_games():
     global processed_games_count
-    semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
     
-    # Initialize fresh data dictionary
+    # Semáforos para controle de concorrência
+    category_semaphore = asyncio.Semaphore(CATEGORY_SEMAPHORE_LIMIT)
+    page_semaphore = asyncio.Semaphore(PAGE_SEMAPHORE_LIMIT)
+    game_semaphore = asyncio.Semaphore(GAME_SEMAPHORE_LIMIT)
+    
     data = {
         "name": "Shisuy's source",
         "downloads": []
@@ -264,20 +308,31 @@ async def scrape_games():
 
     try:
         async with aiohttp.ClientSession() as session:
-            for base_url in BASE_URLS:
+            category_tasks = []
+            
+            # Processa categorias em paralelo
+            for i in range(0, len(BASE_URLS), CATEGORY_SEMAPHORE_LIMIT):
                 if processed_games_count >= MAX_GAMES:
                     break
                     
-                try:
-                    last_page_num = await fetch_last_page_num(session, semaphore, base_url)
-                    for page_num in range(1, last_page_num + 1):
-                        if processed_games_count >= MAX_GAMES:
-                            break
-                        page_url = f"{base_url}/page/{page_num}"
-                        await process_page(session, page_url, semaphore, data, page_num)
-                except GameLimitReached:
-                    break
-
+                batch = BASE_URLS[i:i + CATEGORY_SEMAPHORE_LIMIT]
+                tasks = []
+                
+                for base_url in batch:
+                    async with category_semaphore:
+                        tasks.append(
+                            process_category(
+                                session, 
+                                base_url, 
+                                data, 
+                                page_semaphore, 
+                                game_semaphore
+                            )
+                        )
+                
+                if tasks:
+                    await asyncio.gather(*tasks)
+                    
             save_data(JSON_FILENAME, data)
             print(f"\nScraping finished. Total games processed: {processed_games_count}")
     
