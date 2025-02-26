@@ -8,14 +8,17 @@ from colorama import Fore, init
 
 init(autoreset=True)
 
-BASE_URLS = ["https://repack-games.com/category/" + url for url in [
-    "latest-updates/", "action-games/", "anime-games/", "adventure-games/",
-    "building-games/", "exploration/", "multiplayer-games/", "open-world-game/",
-    "fighting-games/", "horror-games/", "racing-game/", "shooting-games/",
-    "rpg-pc-games/", "puzzle/", "sport-game/", "survival-games/",
-    "simulation-game/", "strategy-games/", "sci-fi-games/", "emulator-games/", "vr-games/"
-    "nudity/"
-]]
+# Reorganizar BASE_URLS para colocar latest-updates primeiro
+BASE_URLS = ["https://repack-games.com/category/latest-updates/"] + [
+    "https://repack-games.com/category/" + url for url in [
+        "action-games/", "anime-games/", "adventure-games/",
+        "building-games/", "exploration/", "multiplayer-games/", "open-world-game/",
+        "fighting-games/", "horror-games/", "racing-game/", "shooting-games/",
+        "rpg-pc-games/", "puzzle/", "sport-game/", "survival-games/",
+        "simulation-game/", "strategy-games/", "sci-fi-games/", "emulator-games/", 
+        "vr-games/", "nudity/"
+    ]
+]
 
 JSON_FILENAME = "shisuyssource.json"
 INVALID_JSON_FILENAME = "invalid_games.json"
@@ -252,10 +255,10 @@ async def cleanup():
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
-# Ajuste estes valores conforme necessário
-CATEGORY_SEMAPHORE_LIMIT = 3  # Número de categorias em paralelo
-PAGE_SEMAPHORE_LIMIT = 30      # Número de páginas por categoria em paralelo
-GAME_SEMAPHORE_LIMIT = 60     # Número de jogos em paralelo por página
+# Ajustar semáforos para melhor performance
+CATEGORY_SEMAPHORE_LIMIT = 2  # Reduzir para focar mais em cada categoria
+PAGE_SEMAPHORE_LIMIT = 20     # Reduzir para evitar sobrecarga
+GAME_SEMAPHORE_LIMIT = 40     # Reduzir para maior estabilidade
 
 async def process_category(session, base_url, data, page_semaphore, game_semaphore):
     global processed_games_count
@@ -265,28 +268,34 @@ async def process_category(session, base_url, data, page_semaphore, game_semapho
 
     try:
         last_page_num = await fetch_last_page_num(session, game_semaphore, base_url)
-        page_tasks = []
         
-        # Cria lista de páginas a processar
-        pages = list(range(1, min(last_page_num + 1, 10)))  # Limita a 10 páginas por categoria
+        # Determinar número máximo de páginas com base na categoria
+        if "latest-updates" in base_url:
+            max_pages = last_page_num  # Sem limite para latest-updates
+        else:
+            max_pages = min(last_page_num, 10)  # Limite de 10 páginas para outras categorias
+            
+        pages = list(range(1, max_pages + 1))
+        
+        print(f"\nProcessing category: {base_url}")
+        print(f"Total pages to process: {len(pages)}")
         
         # Processa páginas em paralelo
         for i in range(0, len(pages), PAGE_SEMAPHORE_LIMIT):
+            if processed_games_count >= MAX_GAMES:
+                break
+                
             batch = pages[i:i + PAGE_SEMAPHORE_LIMIT]
             tasks = []
             
             for page_num in batch:
-                if processed_games_count >= MAX_GAMES:
-                    break
-                    
                 page_url = f"{base_url}/page/{page_num}"
                 tasks.append(process_page(session, page_url, game_semaphore, data, page_num))
             
             if tasks:
                 await asyncio.gather(*tasks)
                 
-            if processed_games_count >= MAX_GAMES:
-                break
+            print(f"Processed pages {i+1} to {min(i+PAGE_SEMAPHORE_LIMIT, len(pages))} of {len(pages)}")
 
     except GameLimitReached:
         return
