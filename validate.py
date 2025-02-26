@@ -15,7 +15,7 @@ from selenium.common.exceptions import TimeoutException
 
 init(autoreset=True)
 
-REMOTE_JSON_URL = "https://raw.githubusercontent.com/Shisuiicaro/Scraper/refs/heads/update/shisuyssource.json"
+REMOTE_JSON_URL = "https://raw.githubusercontent.com/Shisuiicaro/Scraper/refs/heads/main/shisuyssource.json"
 CONCURRENT_REQUESTS = 100
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -27,6 +27,13 @@ HEADERS = {
 }
 
 GOFILE_WT = "4fd6sg89d7s6"
+
+def format_size(size_bytes):
+    """Convert bytes to human readable format."""
+    if size_bytes > 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+    else:
+        return f"{size_bytes / (1024 * 1024):.2f} MB"
 
 class DriverPool:
     def __init__(self, size=3):
@@ -56,6 +63,49 @@ class DriverPool:
             driver.quit()
 
 driver_pool = DriverPool(size=3)
+
+class GofileTokenManager:
+    def __init__(self):
+        self.tokens = []
+        self.current_token = None
+        self.uses = 0
+        self.max_uses = 10
+
+    async def get_token(self, session):
+        if self.current_token is None or self.uses >= self.max_uses:
+            new_token = await self._create_token(session)
+            if new_token:
+                self.current_token = new_token
+                self.uses = 0
+                self.tokens.append(new_token)
+                print(f"{Fore.YELLOW}[INFO] Novo token Gofile criado")
+
+        if self.current_token:
+            self.uses += 1
+            return self.current_token
+        return None
+
+    async def _create_token(self, session):
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept": "*/*",
+            "Connection": "keep-alive"
+        }
+        
+        try:
+            async with session.post("https://api.gofile.io/accounts", headers=headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("status") == "ok":
+                        return data["data"].get("token")
+                print(f"{Fore.RED}[ERROR] Falha ao criar token: {response.status}")
+        except Exception as e:
+            print(f"{Fore.RED}[ERROR] Erro ao criar token: {e}")
+        return None
+
+# Create global token manager
+gofile_manager = GofileTokenManager()
 
 def extract_mediafire_key(url):
     """Extract the file key from a MediaFire URL."""
@@ -91,69 +141,57 @@ def check_mediafire_link(link):
     finally:
         driver_pool.return_driver(driver)
 
-def check_gofile_link(link):
-    driver = driver_pool.get_driver()
-    try:
-        driver.set_page_load_timeout(10)
-        driver.get(link)
-        
-        try:
-            WebDriverWait(driver, 5).until(
-                lambda d: d.title and len(d.title) > 0
-            )
-        except TimeoutException:
-            return None
-            
-        # Check if the page has content or shows errors
-        error_texts = [
-            "File not found",
-            "404",
-            "Access denied",
-            "File has been deleted"
-        ]
-        
-        page_source = driver.page_source.lower()
-        if any(error in page_source.lower() for error in error_texts):
-            return None
-            
-        # Try to get file size from page
-        try:
-            size_element = WebDriverWait(driver, 3).until(
-                lambda d: d.find_element("class name", "file-size")
-            )
-            file_size = size_element.text
-        except:
-            file_size = ""
-            
-        return link, file_size
-        
-    except Exception as e:
-        print(f"{Fore.RED}[ERROR] Falha ao validar {link}: {e}")
-        return None
-    finally:
-        driver_pool.return_driver(driver)
-
 async def validate_gofile_link(session, link):
     try:
-        loop = asyncio.get_event_loop()
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            result = await loop.run_in_executor(executor, check_gofile_link, link)
-            
-            if result:
-                link, size = result
-                print(f"{Fore.GREEN}[VALID] {link} ({size})")
-                return link, size
-            else:
-                print(f"{Fore.RED}[INVALID] {link}")
+        gofile_id = link.split("/")[-1]
+        token = await gofile_manager.get_token(session)
+        
+        if not token:
+            print(f"{Fore.RED}[ERROR] Não foi possível obter token Gofile")
+            return None, ""
+
+        params = {"wt": GOFILE_WT}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "*/*",
+            "Connection": "keep-alive"
+        }
+        
+        async with session.get(
+            f"https://api.gofile.io/contents/{gofile_id}",
+            params=params,
+            headers=headers
+        ) as response:
+            if response.status != 200:
+                print(f"{Fore.RED}[INVALID] {link} (Status: {response.status})")
                 return None, ""
-                
+            
+            data = await response.json()
+            if data.get("status") != "ok":
+                print(f"{Fore.RED}[INVALID] {link} (API Error)")
+                return None, ""
+
+            content_data = data.get("data", {})
+            if not content_data:
+                print(f"{Fore.RED}[INVALID] {link} (Sem conteúdo)")
+                return None, ""
+
+            total_size = sum(int(child.get("size", 0)) for child in content_data.get("children", {}).values())
+            if total_size == 0:
+                print(f"{Fore.RED}[INVALID] {link} (Tamanho zero)")
+                return None, ""
+
+            formatted_size = format_size(total_size)
+            print(f"{Fore.GREEN}[VALID] {link} ({formatted_size})")
+            return link, formatted_size
+
     except Exception as e:
         print(f"{Fore.RED}[ERROR] Falha ao validar {link}: {e}")
         return None, ""
 
 async def validate_mediafire_link(session, link):
     quick_key = extract_mediafire_key(link)
-    if quick_key:
+    if (quick_key):
         api_url = f"https://www.mediafire.com/api/1.1/file/get_info.php?quick_key={quick_key}&response_format=json"
         try:
             async with session.get(api_url, headers=HEADERS) as response:
