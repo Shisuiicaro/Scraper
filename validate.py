@@ -26,21 +26,15 @@ HEADERS = {
 }
 
 GOFILE_WT = "4fd6sg89d7s6"
-_gofile_token = None
 
 async def get_gofile_token(session):
-    global _gofile_token
-    if _gofile_token:
-        return _gofile_token
-        
     async with session.post("https://api.gofile.io/accounts") as response:
         if response.status != 200:
             return None
             
         data = await response.json()
         if data.get("status") == "ok":
-            _gofile_token = data["data"]["token"]
-            return _gofile_token
+            return data["data"]["token"]
     return None
 
 async def validate_gofile_link(session, link):
@@ -54,6 +48,8 @@ async def validate_gofile_link(session, link):
 
         params = {"wt": GOFILE_WT}
         headers = {"Authorization": f"Bearer {token}"}
+        
+        await asyncio.sleep(0.5)
         
         async with session.get(
             f"https://api.gofile.io/contents/{gofile_id}",
