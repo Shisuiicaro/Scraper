@@ -1,11 +1,15 @@
-name: Update Source
+name: Validate Source
 
 on:
-  workflow_dispatch:
+  workflow_run:
+    workflows: ["Update Source"]
+    types:
+      - completed
 
 jobs:
-  run-scraper:
+  validate:
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
     - name: Checkout repository
@@ -24,8 +28,8 @@ jobs:
         pip install -r requirements.txt
       continue-on-error: true
 
-    - name: Run scraper script
-      run: python scraper.py
+    - name: Run validation script
+      run: python validate.py
       continue-on-error: true
 
     - name: Checkout target repository
@@ -37,13 +41,13 @@ jobs:
         ref: update
       continue-on-error: true
 
-    - name: Copy and commit files
+    - name: Copy and commit validated files
       run: |
-        cp shisuyssource.json target-repo/
+        cp validated.json target-repo/
         cd target-repo
         git config user.name "GitHub Action"
         git config user.email "action@github.com"
-        git add shisuyssource.json
-        git commit -m "Update shisuyssource.json [skip ci]"
+        git add validated.json
+        git commit -m "Update validated.json [skip ci]"
         git push origin update
       continue-on-error: true
