@@ -12,9 +12,6 @@ from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import TimeoutException
-import random
-import time
-from datetime import datetime, timedelta
 
 init(autoreset=True)
 
@@ -70,61 +67,21 @@ driver_pool = DriverPool(size=3)
 class GofileTokenManager:
     def __init__(self):
         self.tokens = []
-        self.token_cache = {}
-        self.last_request = {}
-        self.min_delay = 2  # segundos
-        self.max_delay = 5  # segundos
-        
+        self.current_token = None
+        self.uses = 0
+        self.max_uses = 25
     async def get_token(self, session):
-        # Limpar tokens expirados do cache
-        self._clear_expired_tokens()
-        
-        # Tentar usar token do cache
-        for token in list(self.token_cache.keys()):
-            if self._can_use_token(token):
-                print(f"{Fore.YELLOW}[INFO] Usando token cached")
-                return token
-                
-        return await self._create_token_with_retry(session)
-    
-    def _clear_expired_tokens(self):
-        now = datetime.now()
-        self.token_cache = {
-            token: data for token, data in self.token_cache.items()
-            if now < data['expires_at']
-        }
-    
-    def _can_use_token(self, token):
-        now = datetime.now()
-        if token not in self.last_request:
-            return True
-            
-        time_since_last = (now - self.last_request[token]).total_seconds()
-        return time_since_last >= self.min_delay
-    
-    async def _create_token_with_retry(self, session, max_retries=3):
-        retry_count = 0
-        while retry_count < max_retries:
-            try:
-                # Adicionar delay aleatório
-                await asyncio.sleep(random.uniform(self.min_delay, self.max_delay))
-                
-                token = await self._create_token(session)
-                if token:
-                    # Armazenar token no cache com expiração
-                    self.token_cache[token] = {
-                        'created_at': datetime.now(),
-                        'expires_at': datetime.now() + timedelta(hours=1)
-                    }
-                    return token
-                
-            except Exception as e:
-                print(f"{Fore.RED}[ERROR] Tentativa {retry_count + 1} falhou: {e}")
-                
-            retry_count += 1
-            # Backoff exponencial
-            await asyncio.sleep(2 ** retry_count)
-            
+        if self.current_token is None or self.uses >= self.max_uses:
+            new_token = await self._create_token(session)
+            if new_token:
+                self.current_token = new_token
+                self.uses = 0
+                self.tokens.append(new_token)
+                print(f"{Fore.YELLOW}[INFO] Novo token Gofile criado")
+
+        if self.current_token:
+            self.uses += 1
+            return self.current_token
         return None
 
     async def _create_token(self, session):
@@ -186,108 +143,57 @@ def check_mediafire_link(link):
 async def validate_gofile_link(session, link):
     try:
         gofile_id = link.split("/")[-1]
+        token = await gofile_manager.get_token(session)
         
-        # Primeiro tenta validação via browser
-        if await validate_gofile_browser(link):
-            print(f"{Fore.GREEN}[VALID] {link} (Browser validation)")
-            return link, ""
+        if not token:
+            print(f"{Fore.RED}[ERROR] Não foi possível obter token Gofile")
+            return None, ""
+
+        params = {"wt": GOFILE_WT}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "*/*",
+            "Connection": "keep-alive"
+        }
+        
+        async with session.get(
+            f"https://api.gofile.io/contents/{gofile_id}",
+            params=params,
+            headers=headers
+        ) as response:
+            if response.status != 200:
+                print(f"{Fore.RED}[INVALID] {link} (Status: {response.status})")
+                return None, ""
             
-        # Se falhar, tenta via API com retry
-        return await validate_gofile_api(session, gofile_id)
-        
+            data = await response.json()
+            if data.get("status") != "ok":
+                print(f"{Fore.RED}[INVALID] {link} (API Error)")
+                return None, ""
+
+            content_data = data.get("data", {})
+            if not content_data:
+                print(f"{Fore.RED}[INVALID] {link} (Sem conteúdo)")
+                return None, ""
+
+            # Check for .torrent files in content names
+            children = content_data.get("children", {}).values()
+            for child in children:
+                if child.get("name", "").lower().endswith(".torrent"):
+                    print(f"{Fore.RED}[INVALID] {link} (Arquivo torrent detectado)")
+                    return None, ""
+
+            total_size = sum(int(child.get("size", 0)) for child in children)
+            if total_size == 0:
+                print(f"{Fore.RED}[INVALID] {link} (Tamanho zero)")
+                return None, ""
+
+            formatted_size = format_size(total_size)
+            print(f"{Fore.GREEN}[VALID] {link} ({formatted_size})")
+            return link, formatted_size
+
     except Exception as e:
         print(f"{Fore.RED}[ERROR] Falha ao validar {link}: {e}")
         return None, ""
-
-async def validate_gofile_browser(link):
-    driver = driver_pool.get_driver()
-    try:
-        driver.set_page_load_timeout(10)
-        driver.get(link)
-        
-        try:
-            WebDriverWait(driver, 5).until(
-                lambda d: d.title and len(d.title) > 0
-            )
-        except TimeoutException:
-            return False
-            
-        # Verifica se há indicadores de arquivo válido
-        return "404" not in driver.title and "File not found" not in driver.page_source
-        
-    except Exception:
-        return False
-    finally:
-        driver_pool.return_driver(driver)
-
-async def validate_gofile_api(session, gofile_id, max_retries=3):
-    retry_count = 0
-    while retry_count < max_retries:
-        try:
-            await asyncio.sleep(random.uniform(2, 5))
-            
-            token = await gofile_manager.get_token(session)
-            if not token:
-                retry_count += 1
-                continue
-
-            params = {"wt": GOFILE_WT}
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Accept": "*/*",
-                "Connection": "keep-alive"
-            }
-            
-            async with session.get(
-                f"https://api.gofile.io/contents/{gofile_id}",
-                params=params,
-                headers=headers
-            ) as response:
-                if response.status == 429:
-                    print(f"{Fore.YELLOW}[RATE LIMIT] Aguardando...")
-                    retry_count += 1
-                    await asyncio.sleep(2 ** retry_count)
-                    continue
-                    
-                if response.status != 200:
-                    print(f"{Fore.RED}[INVALID] {link} (Status: {response.status})")
-                    return None, ""
-            
-                data = await response.json()
-                if data.get("status") != "ok":
-                    print(f"{Fore.RED}[INVALID] {link} (API Error)")
-                    return None, ""
-
-                content_data = data.get("data", {})
-                if not content_data:
-                    print(f"{Fore.RED}[INVALID] {link} (Sem conteúdo)")
-                    return None, ""
-
-                children = content_data.get("children", {}).values()
-                total_size = 0
-                
-                for child in children:
-                    name = child.get("name", "").lower()
-                    # Check if the file name itself is a torrent
-                    if ".torrent" in name:
-                        print(f"{Fore.RED}[INVALID] {link} (Arquivo torrent detectado: {name})")
-                        return None, ""
-                    total_size += int(child.get("size", 0))
-
-                if total_size == 0:
-                    print(f"{Fore.RED}[INVALID] {link} (Tamanho zero)")
-                    return None, ""
-
-                formatted_size = format_size(total_size)
-                print(f"{Fore.GREEN}[VALID] {link} ({formatted_size})")
-                return link, formatted_size
-                
-        except Exception as e:
-            print(f"{Fore.RED}[ERROR] Tentativa {retry_count + 1} falhou: {e}")
-            retry_count += 1
-            await asyncio.sleep(2 ** retry_count)
-            
-    return None, ""
 
 async def validate_mediafire_link(session, link):
     quick_key = extract_mediafire_key(link)
@@ -338,18 +244,6 @@ async def validate_qiwi_link(session, link):
 async def validate_single_link(session, link, semaphore):
     try:
         async with semaphore:
-            # Get game title from data structure
-            game_title = None
-            async for game in fetch_json(session):
-                if game.get("uris") and link in game.get("uris", []):
-                    game_title = game.get("title", "").lower()
-                    break
-            
-            # Check if title contains .torrent
-            if game_title and ".torrent" in game_title:
-                print(f"{Fore.RED}[INVALID] {link} (Torrent in title)")
-                return None, ""
-
             if "mediafire.com" in link.lower():
                 return await validate_mediafire_link(session, link)
             elif "qiwi.gg" in link.lower():
