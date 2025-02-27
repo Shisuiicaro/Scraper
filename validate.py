@@ -224,7 +224,6 @@ async def validate_gofile_api(session, gofile_id, max_retries=3):
     retry_count = 0
     while retry_count < max_retries:
         try:
-            # Delay aleatório entre tentativas
             await asyncio.sleep(random.uniform(2, 5))
             
             token = await gofile_manager.get_token(session)
@@ -250,7 +249,6 @@ async def validate_gofile_api(session, gofile_id, max_retries=3):
                     await asyncio.sleep(2 ** retry_count)
                     continue
                     
-                # ... resto da lógica de validação existente ...
                 if response.status != 200:
                     print(f"{Fore.RED}[INVALID] {link} (Status: {response.status})")
                     return None, ""
@@ -265,15 +263,17 @@ async def validate_gofile_api(session, gofile_id, max_retries=3):
                     print(f"{Fore.RED}[INVALID] {link} (Sem conteúdo)")
                     return None, ""
 
-                # Check for .torrent files in names
                 children = content_data.get("children", {}).values()
+                total_size = 0
+                
                 for child in children:
                     name = child.get("name", "").lower()
+                    # Check if the file name itself is a torrent
                     if ".torrent" in name:
-                        print(f"{Fore.RED}[INVALID] {link} (Arquivo torrent detectado)")
+                        print(f"{Fore.RED}[INVALID] {link} (Arquivo torrent detectado: {name})")
                         return None, ""
+                    total_size += int(child.get("size", 0))
 
-                total_size = sum(int(child.get("size", 0)) for child in children)
                 if total_size == 0:
                     print(f"{Fore.RED}[INVALID] {link} (Tamanho zero)")
                     return None, ""
@@ -338,6 +338,18 @@ async def validate_qiwi_link(session, link):
 async def validate_single_link(session, link, semaphore):
     try:
         async with semaphore:
+            # Get game title from data structure
+            game_title = None
+            async for game in fetch_json(session):
+                if game.get("uris") and link in game.get("uris", []):
+                    game_title = game.get("title", "").lower()
+                    break
+            
+            # Check if title contains .torrent
+            if game_title and ".torrent" in game_title:
+                print(f"{Fore.RED}[INVALID] {link} (Torrent in title)")
+                return None, ""
+
             if "mediafire.com" in link.lower():
                 return await validate_mediafire_link(session, link)
             elif "qiwi.gg" in link.lower():
