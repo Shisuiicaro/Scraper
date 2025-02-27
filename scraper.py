@@ -22,8 +22,8 @@ BASE_URLS = ["https://repack-games.com/category/latest-updates/"] + [
 
 JSON_FILENAME = "shisuyssource.json"
 INVALID_JSON_FILENAME = "invalid_games.json"
-MAX_GAMES = 99999999
-CONCURRENT_REQUESTS = 2000
+MAX_GAMES = 9999999
+CONCURRENT_REQUESTS = 6000
 REGEX_TITLE = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -181,6 +181,35 @@ async def fetch_last_page_num(session, semaphore, base_url):
             return int(match.group(1))
     return 1
 
+def find_duplicate_game(data, title):
+    """Verifica se existe um jogo duplicado e retorna o jogo se encontrado."""
+    normalized_new_title = normalize_title(title).lower()
+    for i, game in enumerate(data["downloads"]):
+        normalized_existing_title = normalize_title(game["title"]).lower()
+        if normalized_existing_title == normalized_new_title:
+            return i, game
+    return None, None
+
+def should_replace_game(existing_game, new_title, new_date):
+    """Determina se deve substituir o jogo existente pelo novo."""
+    if not existing_game.get("uploadDate") and new_date:
+        return True
+        
+    if existing_game.get("uploadDate") and new_date:
+        existing_date = datetime.fromisoformat(existing_game["uploadDate"])
+        new_date_obj = datetime.fromisoformat(new_date)
+        if new_date_obj > existing_date:
+            return True
+            
+    # Priorizar versões online-fix (0xdeadcode)
+    existing_is_online = is_deadcode_version(existing_game["title"])
+    new_is_online = is_deadcode_version(new_title)
+    
+    if new_is_online and not existing_is_online:
+        return True
+        
+    return False
+
 async def process_page(session, page_url, semaphore, data, page_num):
     global processed_games_count
     if processed_games_count >= MAX_GAMES:
@@ -239,7 +268,24 @@ async def process_page(session, page_url, semaphore, data, page_num):
             print(f"Ignoring game with title: {title}")
             continue
 
-        # Add game directly without checking for duplicates
+        # Nova lógica para verificar e atualizar duplicatas
+        duplicate_index, existing_game = find_duplicate_game(data, title)
+        
+        if existing_game:
+            if should_replace_game(existing_game, title, upload_date):
+                # Atualizar jogo existente
+                data["downloads"][duplicate_index] = {
+                    "title": title,
+                    "uris": links,
+                    "fileSize": "",
+                    "uploadDate": upload_date
+                }
+                log_game_status("UPDATED", page_num, title)
+            else:
+                log_game_status("IGNORED", page_num, title)
+            continue
+
+        # Adicionar novo jogo
         data["downloads"].append({
             "title": title,
             "uris": links,

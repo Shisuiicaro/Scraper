@@ -12,10 +12,11 @@ from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import TimeoutException
+from aiohttp_socks import ProxyConnector  # Add this import
 
 init(autoreset=True)
 
-REMOTE_JSON_URL = "https://raw.githubusercontent.com/Shisuiicaro/Scraper/refs/heads/main/shisuyssource.json"
+REMOTE_JSON_URL = "https://raw.githubusercontent.com/Shisuiicaro/Scraper/refs/heads/update/shisuyssource.json"
 CONCURRENT_REQUESTS = 100
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -63,6 +64,44 @@ class DriverPool:
             driver.quit()
 
 driver_pool = DriverPool(size=3)
+    
+class ProxyManager:
+    def __init__(self):
+        self.proxies = []
+        self.current_index = 0
+        
+    async def fetch_proxies(self, session):
+        try:
+            async with session.get("https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=json") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    # Extract only the proxy URL from the response
+                    self.proxies = []
+                    for proxy_data in data.get("proxies", []):
+                        try:
+                            if isinstance(proxy_data, dict) and "proxy" in proxy_data:
+                                self.proxies.append(proxy_data["proxy"])
+                            elif isinstance(proxy_data, str):
+                                # If it's just a string like "ip:port", format it
+                                self.proxies.append(f"http://{proxy_data}")
+                        except:
+                            continue
+                    print(f"{Fore.YELLOW}[INFO] Carregados {len(self.proxies)} proxies")
+                else:
+                    print(f"{Fore.RED}[ERROR] Falha ao carregar proxies: {response.status}")
+        except Exception as e:
+            print(f"{Fore.RED}[ERROR] Erro ao carregar proxies: {e}")
+    
+    def get_next_proxy(self):
+        if not self.proxies:
+            return None
+        proxy = self.proxies[self.current_index]
+        self.current_index = (self.current_index + 1) % len(self.proxies)
+        # Return proxy URL as string
+        return str(proxy) if proxy else None
+
+# Create global proxy manager
+proxy_manager = ProxyManager()
 
 class GofileTokenManager:
     def __init__(self):
@@ -70,6 +109,9 @@ class GofileTokenManager:
         self.current_token = None
         self.uses = 0
         self.max_uses = 25
+        self.max_retries = 3
+        self.retry_delay = 1  # Delay between retries in seconds
+
     async def get_token(self, session):
         if self.current_token is None or self.uses >= self.max_uses:
             new_token = await self._create_token(session)
@@ -92,15 +134,42 @@ class GofileTokenManager:
             "Connection": "keep-alive"
         }
         
-        try:
-            async with session.post("https://api.gofile.io/accounts", headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("status") == "ok":
-                        return data["data"].get("token")
-                print(f"{Fore.RED}[ERROR] Falha ao criar token: {response.status}")
-        except Exception as e:
-            print(f"{Fore.RED}[ERROR] Erro ao criar token: {e}")
+        for attempt in range(self.max_retries):
+            try:
+                # Try without proxy first
+                async with session.post(
+                    "https://api.gofile.io/accounts",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get("status") == "ok":
+                            return data["data"].get("token")
+                
+                # If direct connection fails, try with proxy
+                proxy = proxy_manager.get_next_proxy()
+                if proxy:
+                    print(f"{Fore.YELLOW}[INFO] Tentando proxy: {proxy}")
+                    connector = ProxyConnector.from_url(proxy)
+                    async with aiohttp.ClientSession(connector=connector) as proxy_session:
+                        async with proxy_session.post(
+                            "https://api.gofile.io/accounts",
+                            headers=headers,
+                            timeout=aiohttp.ClientTimeout(total=5)
+                        ) as response:
+                            if response.status == 200:
+                                data = await response.json()
+                                if data.get("status") == "ok":
+                                    return data["data"].get("token")
+                
+            except Exception as e:
+                print(f"{Fore.RED}[ERROR] Falha ao criar token: {str(e)}")
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(self.retry_delay)
+                continue
+                
+        print(f"{Fore.RED}[ERROR] Todas as tentativas de criar token falharam")
         return None
 
 # Create global token manager
@@ -300,7 +369,13 @@ async def fetch_json(session):
 async def validate_all_links():
     try:
         semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
-        async with aiohttp.ClientSession() as session:
+        # Create session with longer timeout and keep-alive
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        conn = aiohttp.TCPConnector(limit=10, ttl_dns_cache=300)
+        async with aiohttp.ClientSession(timeout=timeout, connector=conn) as session:
+            # Fetch proxies before starting validation
+            await proxy_manager.fetch_proxies(session)
+            
             data = await fetch_json(session)
             if not data or "downloads" not in data:
                 print(f"{Fore.RED}JSON inválido")
