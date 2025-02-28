@@ -48,6 +48,6 @@ jobs:
         git config user.name "GitHub Action"
         git config user.email "action@github.com"
         git add validated.json
-        git commit -m "Update validated.json [skip ci]"
+        git commit -m "Update shisuyssource.json [skip ci]"
         git push origin update
       continue-on-error: true
