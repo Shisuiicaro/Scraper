@@ -144,7 +144,7 @@ async def fetch_game_details(session, game_url, semaphore):
     all_links = []
     for tag in soup.find_all('a', href=True):
         href = tag['href']
-        if any(domain in href for domain in ["1fichier.com", "qiwi.gg", "pixeldrain.com", "mediafire.com", "gofile.io"]):
+        if any(domain in href for domain in ["1fichier.com", "qiwi.gg", "pixeldrain.com", "mediafire.com"]):
             all_links.append(href)
 
     filtered_links = {}
@@ -158,14 +158,11 @@ async def fetch_game_details(session, game_url, semaphore):
             domain = "pixeldrain"
         elif "mediafire.com" in link:
             domain = "mediafire"
-        elif "gofile.io" in link:
-            domain = "gofile"
 
         if domain and domain not in filtered_links:
             filtered_links[domain] = link
 
     download_links = list(filtered_links.values())
-
     return title, "", download_links, upload_date
 
 async def fetch_last_page_num(session, semaphore, base_url):

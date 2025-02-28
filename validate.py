@@ -2,7 +2,7 @@ import aiohttp
 import asyncio
 import json
 import requests
-import re  # Add missing import
+import re
 from colorama import Fore, init
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import TimeoutException
-from aiohttp_socks import ProxyConnector  # Add this import
+from aiohttp_socks import ProxyConnector
 
 init(autoreset=True)
 
@@ -26,8 +26,6 @@ HEADERS = {
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1"
 }
-
-GOFILE_WT = "4fd6sg89d7s6"
 
 def format_size(size_bytes):
     """Convert bytes to human readable format."""
@@ -103,78 +101,6 @@ class ProxyManager:
 # Create global proxy manager
 proxy_manager = ProxyManager()
 
-class GofileTokenManager:
-    def __init__(self):
-        self.tokens = []
-        self.current_token = None
-        self.uses = 0
-        self.max_uses = 25
-        self.max_retries = 3
-        self.retry_delay = 1  # Delay between retries in seconds
-
-    async def get_token(self, session):
-        if self.current_token is None or self.uses >= self.max_uses:
-            new_token = await self._create_token(session)
-            if new_token:
-                self.current_token = new_token
-                self.uses = 0
-                self.tokens.append(new_token)
-                print(f"{Fore.YELLOW}[INFO] Novo token Gofile criado")
-
-        if self.current_token:
-            self.uses += 1
-            return self.current_token
-        return None
-
-    async def _create_token(self, session):
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept": "*/*",
-            "Connection": "keep-alive"
-        }
-        
-        for attempt in range(self.max_retries):
-            try:
-                # Try without proxy first
-                async with session.post(
-                    "https://api.gofile.io/accounts",
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if data.get("status") == "ok":
-                            return data["data"].get("token")
-                
-                # If direct connection fails, try with proxy
-                proxy = proxy_manager.get_next_proxy()
-                if proxy:
-                    print(f"{Fore.YELLOW}[INFO] Tentando proxy: {proxy}")
-                    connector = ProxyConnector.from_url(proxy)
-                    async with aiohttp.ClientSession(connector=connector) as proxy_session:
-                        async with proxy_session.post(
-                            "https://api.gofile.io/accounts",
-                            headers=headers,
-                            timeout=aiohttp.ClientTimeout(total=5)
-                        ) as response:
-                            if response.status == 200:
-                                data = await response.json()
-                                if data.get("status") == "ok":
-                                    return data["data"].get("token")
-                
-            except Exception as e:
-                print(f"{Fore.RED}[ERROR] Falha ao criar token: {str(e)}")
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay)
-                continue
-                
-        print(f"{Fore.RED}[ERROR] Todas as tentativas de criar token falharam")
-        return None
-
-# Create global token manager
-gofile_manager = GofileTokenManager()
-
 def extract_mediafire_key(url):
     """Extract the file key from a MediaFire URL."""
     try:
@@ -208,61 +134,6 @@ def check_mediafire_link(link):
         return None
     finally:
         driver_pool.return_driver(driver)
-
-async def validate_gofile_link(session, link):
-    try:
-        gofile_id = link.split("/")[-1]
-        token = await gofile_manager.get_token(session)
-        
-        if not token:
-            print(f"{Fore.RED}[ERROR] Não foi possível obter token Gofile")
-            return None, ""
-
-        params = {"wt": GOFILE_WT}
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "*/*",
-            "Connection": "keep-alive"
-        }
-        
-        async with session.get(
-            f"https://api.gofile.io/contents/{gofile_id}",
-            params=params,
-            headers=headers
-        ) as response:
-            if response.status != 200:
-                print(f"{Fore.RED}[INVALID] {link} (Status: {response.status})")
-                return None, ""
-            
-            data = await response.json()
-            if data.get("status") != "ok":
-                print(f"{Fore.RED}[INVALID] {link} (API Error)")
-                return None, ""
-
-            content_data = data.get("data", {})
-            if not content_data:
-                print(f"{Fore.RED}[INVALID] {link} (Sem conteúdo)")
-                return None, ""
-
-            # Check for .torrent files in content names
-            children = content_data.get("children", {}).values()
-            for child in children:
-                if child.get("name", "").lower().endswith(".torrent"):
-                    print(f"{Fore.RED}[INVALID] {link} (Arquivo torrent detectado)")
-                    return None, ""
-
-            total_size = sum(int(child.get("size", 0)) for child in children)
-            if total_size == 0:
-                print(f"{Fore.RED}[INVALID] {link} (Tamanho zero)")
-                return None, ""
-
-            formatted_size = format_size(total_size)
-            print(f"{Fore.GREEN}[VALID] {link} ({formatted_size})")
-            return link, formatted_size
-
-    except Exception as e:
-        print(f"{Fore.RED}[ERROR] Falha ao validar {link}: {e}")
-        return None, ""
 
 async def validate_mediafire_link(session, link):
     quick_key = extract_mediafire_key(link)
@@ -317,16 +188,12 @@ async def validate_single_link(session, link, semaphore):
                 return await validate_mediafire_link(session, link)
             elif "qiwi.gg" in link.lower():
                 return await validate_qiwi_link(session, link)
-            elif "gofile.io" in link.lower():
-                return await validate_gofile_link(session, link)
 
             timeout = aiohttp.ClientTimeout(total=30)
             async with session.get(link, headers=HEADERS, timeout=timeout) as response:
                 if response.status != 200:
                     print(f"{Fore.RED}[INVALID] {link} (Status {response.status})")
-
                     return None, ""
-                    
 
                 content = await response.text()
                 error_indicators = [
@@ -335,7 +202,6 @@ async def validate_single_link(session, link, semaphore):
                     "unavailable",
                     "torrent",
                     "magnet:",
-
                     ".torrent",
                     "file has been deleted",
                     "file does not exist",
@@ -366,6 +232,27 @@ async def fetch_json(session):
             print(f"{Fore.RED}Erro na conversão do JSON: {e}")
             return None
 
+class ProgressTracker:
+    def __init__(self, total_games):
+        self.total_games = total_games
+        self.processed_games = 0
+        self.valid_links = 0
+        self.invalid_links = 0
+        
+    def update(self, valid=True):
+        self.processed_games += 1
+        if valid:
+            self.valid_links += 1
+        else:
+            self.invalid_links += 1
+            
+    def print_progress(self):
+        percentage = (self.processed_games / self.total_games) * 100
+        print(f"\r{Fore.CYAN}Progresso: {percentage:.1f}% | "
+              f"Jogos: {self.processed_games}/{self.total_games} | "
+              f"Links válidos: {self.valid_links} | "
+              f"Links inválidos: {self.invalid_links}", end="")
+
 async def validate_all_links():
     try:
         semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
@@ -382,6 +269,8 @@ async def validate_all_links():
                 return
 
             total_games = len(data["downloads"])
+            progress = ProgressTracker(total_games)
+            print(f"\n{Fore.YELLOW}Iniciando validação de {total_games} jogos...")
             
             for game in data["downloads"]:
                 uris = [uri for uri in game.get("uris", []) if uri is not None]
@@ -391,10 +280,15 @@ async def validate_all_links():
                 for result in results:
                     if result and isinstance(result, tuple) and len(result) == 2 and result[0]:
                         valid_results.append(result)
+                        progress.update(valid=True)
+                    else:
+                        progress.update(valid=False)
                 
                 game["uris"] = [link for link, _ in valid_results]
                 valid_sizes = [size for _, size in valid_results if size]
                 game["fileSize"] = max(valid_sizes, default="") if valid_sizes else ""
+                
+                progress.print_progress()
 
             def is_valid_game(game):
                 links = game.get("uris", [])
