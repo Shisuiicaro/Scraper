@@ -157,11 +157,43 @@ async def validate_mediafire_link(session, link):
         result = await loop.run_in_executor(executor, check_mediafire_link, link)
         
         if result:
-            print(f"{Fore.GREEN}[VALID] {link} ({formatted_size})")
+            print(f"{Fore.GREEN}[VALID] MediaFire: {link} ({formatted_size})")
             return link, formatted_size
         else:
-            print(f"{Fore.RED}[INVALID] {link}")
+            print(f"{Fore.RED}[INVALID] MediaFire: {link}")
             return None, ""
+
+async def get_pixeldrain_size(session, link):
+    try:
+        # Extrair ID do arquivo do link do Pixeldrain
+        file_id = link.split("/")[-1]
+        api_url = f"https://pixeldrain.com/api/file/{file_id}/info"
+        
+        async with session.get(api_url, headers=HEADERS) as response:
+            if response.status == 200:
+                data = await response.json()
+                if "size" in data:
+                    return format_size(int(data["size"]))
+    except Exception as e:
+        print(f"{Fore.RED}[ERROR] Falha ao obter tamanho Pixeldrain: {e}")
+    return ""
+
+async def get_qiwi_size(session, url):
+    try:
+        async with session.get(url, headers=HEADERS, allow_redirects=True, ssl=False) as response:
+            if response.status == 200:
+                text = await response.text()
+                # Procurar pelo padrão de tamanho no HTML
+                size_match = re.search(r'">Size:</td>\s*<td[^>]*>([^<]+)</td>', text)
+                if size_match:
+                    return size_match.group(1).strip()
+                # Padrão alternativo
+                size_match = re.search(r'(\d+(?:\.\d+)?\s*(?:GB|MB|KB))', text)
+                if size_match:
+                    return size_match.group(1)
+    except Exception as e:
+        print(f"{Fore.RED}[ERROR] Falha ao obter tamanho Qiwi: {e}")
+    return ""
 
 async def validate_qiwi_link(session, link):
     try:
@@ -172,13 +204,28 @@ async def validate_qiwi_link(session, link):
             ssl=False
         ) as response:
             if response.status == 200:
-                print(f"{Fore.GREEN}[VALID] {link}")
-                return link, ""
+                size = await get_qiwi_size(session, link)
+                print(f"{Fore.GREEN}[VALID] Qiwi: {link} ({size})")
+                return link, size
             else:
-                print(f"{Fore.RED}[INVALID] {link}")
+                print(f"{Fore.RED}[INVALID] Qiwi: {link}")
                 return None, ""
     except Exception as e:
-        print(f"{Fore.RED}[ERROR] {link}: {e}")
+        print(f"{Fore.RED}[ERROR] Qiwi: {link}: {e}")
+        return None, ""
+
+async def validate_pixeldrain_link(session, link):
+    try:
+        async with session.get(link, headers=HEADERS) as response:
+            if response.status == 200:
+                size = await get_pixeldrain_size(session, link)
+                print(f"{Fore.GREEN}[VALID] Pixeldrain: {link} ({size})")
+                return link, size
+            else:
+                print(f"{Fore.RED}[INVALID] Pixeldrain: {link}")
+                return None, ""
+    except Exception as e:
+        print(f"{Fore.RED}[ERROR] Pixeldrain: {link}: {e}")
         return None, ""
 
 async def validate_single_link(session, link, semaphore):
@@ -188,11 +235,14 @@ async def validate_single_link(session, link, semaphore):
                 return await validate_mediafire_link(session, link)
             elif "qiwi.gg" in link.lower():
                 return await validate_qiwi_link(session, link)
+            elif "pixeldrain.com" in link.lower():
+                return await validate_pixeldrain_link(session, link)
 
+            # Fallback para outros hosts
             timeout = aiohttp.ClientTimeout(total=30)
             async with session.get(link, headers=HEADERS, timeout=timeout) as response:
                 if response.status != 200:
-                    print(f"{Fore.RED}[INVALID] {link} (Status {response.status})")
+                    print(f"{Fore.RED}[INVALID] Other: {link} (Status {response.status})")
                     return None, ""
 
                 content = await response.text()
@@ -210,14 +260,14 @@ async def validate_single_link(session, link, semaphore):
                 ]
 
                 if any(indicator in content.lower() for indicator in error_indicators):
-                    print(f"{Fore.RED}[INVALID] {link} (Indicador de erro detectado)")
+                    print(f"{Fore.RED}[INVALID] Other: {link} (Indicador de erro detectado)")
                     return None, ""
                     
-                print(f"{Fore.GREEN}[VALID] {link}")
+                print(f"{Fore.GREEN}[VALID] Other: {link}")
                 return link, ""
 
     except Exception as e:
-        print(f"{Fore.RED}[ERROR] Falha ao validar {link}: {e}")
+        print(f"{Fore.RED}[ERROR] Other: {link}: {e}")
         return None, ""
 
 async def fetch_json(session):
