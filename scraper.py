@@ -311,14 +311,7 @@ async def process_category(session, base_url, data, page_semaphore, game_semapho
 
     try:
         last_page_num = await fetch_last_page_num(session, game_semaphore, base_url)
-        
-        # Determinar número máximo de páginas com base na categoria
-        if "latest-updates" in base_url:
-            max_pages = last_page_num  # Sem limite para latest-updates
-        else:
-            max_pages = min(last_page_num, 10)  # Limite de 10 páginas para outras categorias
-            
-        pages = list(range(1, max_pages + 1))
+        pages = list(range(1, last_page_num + 1))
         
         print(f"\nProcessing category: {base_url}")
         print(f"Total pages to process: {len(pages)}")
