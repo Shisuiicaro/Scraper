@@ -3,6 +3,7 @@ import asyncio
 import json
 import requests
 import re
+import brotli  # Adicionar esta importação
 from colorama import Fore, init
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -24,7 +25,9 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1"
+    "Upgrade-Insecure-Requests": "1",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
 }
 
 def format_size(size_bytes):
@@ -199,7 +202,7 @@ async def validate_qiwi_link(session, link):
     try:
         async with session.get(
             link,
-            headers={"User-Agent": "Mozilla/5.0"},
+            headers=HEADERS,  # Usar os headers modificados
             allow_redirects=True,
             ssl=False
         ) as response:
