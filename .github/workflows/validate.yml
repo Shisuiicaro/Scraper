@@ -43,11 +43,11 @@ jobs:
 
     - name: Copy and commit validated files
       run: |
-        cp validated.json target-repo/
+        cp shisuyssource.json target-repo/
         cd target-repo
         git config user.name "GitHub Action"
         git config user.email "action@github.com"
-        git add validated.json
+        git add shisuyssource.json
         git commit -m "Update shisuyssource.json [skip ci]"
         git push origin update
       continue-on-error: true
