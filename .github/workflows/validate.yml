@@ -49,5 +49,5 @@ jobs:
         git config user.email "action@github.com"
         git add shisuyssource.json
         git commit -m "Update shisuyssource.json [skip ci]"
-        git push origin update
+        git push origin main
       continue-on-error: true
