@@ -166,15 +166,35 @@ async def validate_mediafire_link(session, link):
             print(f"{Fore.RED}[INVALID] MediaFire: {link}")
             return None, ""
 
+async def check_for_torrent_content(text):
+    """Verifica se o conteúdo contém indicadores de torrent/magnet"""
+    torrent_indicators = [
+        "torrent",
+        "magnet:",
+        ".torrent",
+        "tracker",
+        "seeders",
+        "leechers",
+        "peer",
+        "btih:",
+        "bittorrent"
+    ]
+    return any(indicator in text.lower() for indicator in torrent_indicators)
+
 async def get_pixeldrain_size(session, link):
     try:
-        # Extrair ID do arquivo do link do Pixeldrain
         file_id = link.split("/")[-1]
         api_url = f"https://pixeldrain.com/api/file/{file_id}/info"
         
         async with session.get(api_url, headers=HEADERS) as response:
             if response.status == 200:
                 data = await response.json()
+                
+                # Verificar nome do arquivo por torrent
+                if "name" in data and await check_for_torrent_content(data["name"]):
+                    print(f"{Fore.RED}[TORRENT DETECTED] Pixeldrain: {link}")
+                    return None
+                    
                 if "size" in data:
                     return format_size(int(data["size"]))
     except Exception as e:
@@ -186,11 +206,16 @@ async def get_qiwi_size(session, url):
         async with session.get(url, headers=HEADERS, allow_redirects=True, ssl=False) as response:
             if response.status == 200:
                 text = await response.text()
-                # Procurar pelo padrão de tamanho no HTML
+                
+                # Verificar por conteúdo torrent
+                if await check_for_torrent_content(text):
+                    print(f"{Fore.RED}[TORRENT DETECTED] Qiwi: {url}")
+                    return None
+                
+                # Continuar com a extração do tamanho
                 size_match = re.search(r'">Size:</td>\s*<td[^>]*>([^<]+)</td>', text)
                 if size_match:
                     return size_match.group(1).strip()
-                # Padrão alternativo
                 size_match = re.search(r'(\d+(?:\.\d+)?\s*(?:GB|MB|KB))', text)
                 if size_match:
                     return size_match.group(1)
@@ -208,6 +233,8 @@ async def validate_qiwi_link(session, link):
         ) as response:
             if response.status == 200:
                 size = await get_qiwi_size(session, link)
+                if size is None:  # Torrent detectado
+                    return None, ""
                 print(f"{Fore.GREEN}[VALID] Qiwi: {link} ({size})")
                 return link, size
             else:
@@ -222,6 +249,8 @@ async def validate_pixeldrain_link(session, link):
         async with session.get(link, headers=HEADERS) as response:
             if response.status == 200:
                 size = await get_pixeldrain_size(session, link)
+                if size is None:  # Torrent detectado
+                    return None, ""
                 print(f"{Fore.GREEN}[VALID] Pixeldrain: {link} ({size})")
                 return link, size
             else:
