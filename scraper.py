@@ -115,8 +115,10 @@ def mark_special_categories(title, url):
     return title
 
 def normalize_special_titles(title):
-    if title == "The Headliners":
-        return "Headliners"
+    if "The Headliners" in title:
+        return title.replace("The Headliners", "Headliners")
+    return title
+
     if "0xdeadcode" in title:
         return title.replace("0xdeadcode", "Multiplayer")
     return title
