@@ -116,11 +116,9 @@ def mark_special_categories(title, url):
 
 def normalize_special_titles(title):
     if "The Headliners" in title:
-        return title.replace("The Headliners", "Headliners")
-    return title
-
+        title = title.replace("The Headliners", "Headliners")
     if "0xdeadcode" in title:
-        return title.replace("0xdeadcode", "Multiplayer")
+        title = title.replace("0xdeadcode", "Multiplayer")
     return title
 
 def is_deadcode_version(title):
@@ -333,7 +331,7 @@ async def process_category(session, base_url, data, page_semaphore, game_semapho
             if tasks:
                 await asyncio.gather(*tasks)
                 
-            print(f"Processed pages {i+1} to {min(i+PAGE_SEMAPHORE_LIMIT, len(pages))} of {len(pages)}")
+            print(f"Processed pages {i+1} to {min(i+PAGE_SEMAPHORE_LIMIT, len(pages))} of {len(pages))}")
 
     except GameLimitReached:
         return
