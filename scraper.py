@@ -331,7 +331,7 @@ async def process_category(session, base_url, data, page_semaphore, game_semapho
             if tasks:
                 await asyncio.gather(*tasks)
                 
-            print(f"Processed pages {i+1} to {min(i+PAGE_SEMAPHORE_LIMIT, len(pages))} of {len(pages))}")
+            print(f"Processed pages {i+1} to {min(i+PAGE_SEMAPHORE_LIMIT, len(pages))} of {len(pages)}")
 
     except GameLimitReached:
         return
