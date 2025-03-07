@@ -119,6 +119,8 @@ def normalize_special_titles(title):
         title = title.replace("The Headliners", "Headliners")
     if "0xdeadcode" in title:
         title = title.replace("0xdeadcode", "Multiplayer")
+    if "0xdeadc0de" in title:
+        title = title.replace("0xdeadc0de", "Multiplayer")       
     return title
 
 def is_deadcode_version(title):
