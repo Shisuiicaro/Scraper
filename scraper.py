@@ -115,12 +115,14 @@ def mark_special_categories(title, url):
     return title
 
 def normalize_special_titles(title):
+    """Normaliza títulos especiais, incluindo versões deadcode"""
     if "The Headliners" in title:
         title = title.replace("The Headliners", "Headliners")
-    if "0xdeadcode" in title:
-        title = title.replace("0xdeadcode", "Multiplayer")
-    if "0xdeadc0de" in title:
-        title = title.replace("0xdeadc0de", "Multiplayer")       
+    if "0xdeadcode" in title.lower() or "0xdeadc0de" in title.lower():
+        # Remover o deadcode e adicionar Multiplayer
+        title = re.sub(r'(?i)0xdeadc?o?de\s*', '', title).strip()
+        if not title.lower().endswith("multiplayer"):
+            title += " Multiplayer"
     return title
 
 def is_deadcode_version(title):
@@ -182,15 +184,25 @@ async def fetch_last_page_num(session, semaphore, base_url):
 
 def find_duplicate_game(data, title):
     """Verifica se existe um jogo duplicado e retorna o jogo se encontrado."""
+    # Primeiro normaliza o título removendo padrões comuns
     normalized_new_title = normalize_title(title).lower()
+    # Remover "multiplayer" do final para comparação
+    base_new_title = re.sub(r'\s*multiplayer\s*$', '', normalized_new_title).strip()
+    
     for i, game in enumerate(data["downloads"]):
         normalized_existing_title = normalize_title(game["title"]).lower()
-        if normalized_existing_title == normalized_new_title:
+        base_existing_title = re.sub(r'\s*multiplayer\s*$', '', normalized_existing_title).strip()
+        
+        if base_existing_title == base_new_title:
             return i, game
     return None, None
 
 def should_replace_game(existing_game, new_title, new_date):
     """Determina se deve substituir o jogo existente pelo novo."""
+    # Se o novo título tem deadcode, sempre substitui
+    if "0xdeadcode" in new_title.lower() or "0xdeadc0de" in new_title.lower():
+        return True
+        
     if not existing_game.get("uploadDate") and new_date:
         return True
         
@@ -200,13 +212,6 @@ def should_replace_game(existing_game, new_title, new_date):
         if new_date_obj > existing_date:
             return True
             
-    # Priorizar versões online-fix (0xdeadcode)
-    existing_is_online = is_deadcode_version(existing_game["title"])
-    new_is_online = is_deadcode_version(new_title)
-    
-    if new_is_online and not existing_is_online:
-        return True
-        
     return False
 
 async def process_page(session, page_url, semaphore, data, page_num):
