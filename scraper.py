@@ -123,6 +123,9 @@ def normalize_special_titles(title):
         title = title.replace("0xdeadc0de", "Multiplayer")       
     return title
 
+def is_valid_qiwi_link(link):
+    return "qiwi.gg" in link and "/file/" in link and "/folder/" not in link
+
 def is_deadcode_version(title):
     return "0xdeadcode" in title.lower()
 
@@ -146,7 +149,9 @@ async def fetch_game_details(session, game_url, semaphore):
     all_links = []
     for tag in soup.find_all('a', href=True):
         href = tag['href']
-        if any(domain in href for domain in ["1fichier.com", "qiwi.gg", "pixeldrain.com", "mediafire.com"]):
+        if "1fichier.com" in href or "pixeldrain.com" in href or "mediafire.com" in href:
+            all_links.append(href)
+        elif "qiwi.gg" in href and is_valid_qiwi_link(href):
             all_links.append(href)
 
     filtered_links = {}
