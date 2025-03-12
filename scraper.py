@@ -127,7 +127,8 @@ def is_valid_qiwi_link(link):
     return "qiwi.gg" in link and "/file/" in link and "/folder/" not in link
 
 def is_deadcode_version(title):
-    return "0xdeadcode" in title.lower()
+    title_lower = title.lower()
+    return "0xdeadcode" in title_lower or "0xdeadc0de" in title_lower
 
 async def fetch_game_details(session, game_url, semaphore):
     page_content = await fetch_page(session, game_url, semaphore)
@@ -196,6 +197,18 @@ def find_duplicate_game(data, title):
 
 def should_replace_game(existing_game, new_title, new_date):
     """Determina se deve substituir o jogo existente pelo novo."""
+    existing_is_online = is_deadcode_version(existing_game["title"])
+    new_is_online = is_deadcode_version(new_title)
+    
+    # Se o jogo existente é 0xdeadcode e o novo não é, não substituir
+    if existing_is_online and not new_is_online:
+        return False
+        
+    # Se o novo é 0xdeadcode e o existente não é, substituir
+    if new_is_online and not existing_is_online:
+        return True
+        
+    # Se ambos são ou não são 0xdeadcode, verificar datas
     if not existing_game.get("uploadDate") and new_date:
         return True
         
@@ -205,13 +218,6 @@ def should_replace_game(existing_game, new_title, new_date):
         if new_date_obj > existing_date:
             return True
             
-    # Priorizar versões online-fix (0xdeadcode)
-    existing_is_online = is_deadcode_version(existing_game["title"])
-    new_is_online = is_deadcode_version(new_title)
-    
-    if new_is_online and not existing_is_online:
-        return True
-        
     return False
 
 async def process_page(session, page_url, semaphore, data, page_num):
