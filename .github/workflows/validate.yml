@@ -2,10 +2,7 @@ name: Validate Source
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows: ["Update Source"]
-    types:
-      - completed
+
 
 jobs:
   validate:
