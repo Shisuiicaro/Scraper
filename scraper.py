@@ -1,4 +1,4 @@
-import aiohttp
+import cloudscraper
 import asyncio
 from bs4 import BeautifulSoup
 import json
@@ -22,7 +22,7 @@ BASE_URLS = ["https://repack-games.com/category/latest-updates/"] + [
 
 JSON_FILENAME = "shisuyssource.json"
 INVALID_JSON_FILENAME = "invalid_games.json"
-MAX_GAMES = 9999999
+MAX_GAMES = 1000000
 CONCURRENT_REQUESTS = 6000
 REGEX_TITLE = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 HEADERS = {
@@ -30,7 +30,8 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
     "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1"
+    "Upgrade-Insecure-Requests": "1",
+    "Referer": "https://repack-games.com/"  # Adicionado para simular navegação
 }
 
 processed_games_count = 0
@@ -93,17 +94,19 @@ def save_invalid_game(title, reason, links=None):
     with open(INVALID_JSON_FILENAME, 'w', encoding='utf-8') as f:
         json.dump(invalid_data, f, ensure_ascii=False, indent=4)
 
-async def fetch_page(session, url, semaphore):
-    async with semaphore:
+async def fetch_page(scraper, url, retries=2):  # Reduzido para 2 tentativas
+    """Fetch a page with retries in case of temporary failures."""
+    for attempt in range(retries):
         try:
-            timeout = aiohttp.ClientTimeout(total=30)
-            async with session.get(url, headers=HEADERS, timeout=timeout) as response:
-                if response.status == 200:
-                    return await response.text()
-                return None
+            response = scraper.get(url, headers=HEADERS, timeout=8)  # Reduzido timeout para 8 segundos
+            if response.status_code == 200:
+                return response.text
+            print(f"Attempt {attempt + 1} failed for {url} with status {response.status_code}")
         except Exception as e:
-            print(f"Error fetching {url}: {str(e)}")
-            return None
+            print(f"Attempt {attempt + 1} failed for {url}: {str(e)}")
+        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+    print(f"Failed to fetch {url} after {retries} retries")
+    return None
 
 def mark_special_categories(title, url):
     if "emulator-games" in url.lower() and not any(x in title.lower() for x in ["emulator", "emu", "(emu)"]):
@@ -130,10 +133,22 @@ def is_deadcode_version(title):
     title_lower = title.lower()
     return "0xdeadcode" in title_lower or "0xdeadc0de" in title_lower
 
-async def fetch_game_details(session, game_url, semaphore):
-    page_content = await fetch_page(session, game_url, semaphore)
+def find_duplicate_game(data, repack_link_source):
+    """Verifica se existe um jogo duplicado pelo link da página."""
+    for i, game in enumerate(data["downloads"]):
+        # Ignorar imediatamente se o link for exatamente igual
+        if game.get("repackLinkSource") == repack_link_source:
+            return i, game, "IGNORE"
+    return None, None, "NEW"
+
+def is_valid_datanodes_link(link):
+    """Verifica se o link é válido para datanodes.to."""
+    return "datanodes.to" in link  # Removida a verificação de '/file/'
+
+async def fetch_game_details(scraper, game_url):
+    page_content = await fetch_page(scraper, game_url)
     if not page_content:
-        return None, None, [], None
+        return None, None, [], None, None
 
     soup = BeautifulSoup(page_content, 'html.parser')
     title = soup.find('h1', class_='entry-title').get_text(strip=True) if soup.find('h1', class_='entry-title') else "Unknown Title"
@@ -147,34 +162,42 @@ async def fetch_game_details(session, game_url, semaphore):
     else:
         upload_date = None
 
+    file_size = None
+    size_element = soup.find(string=re.compile(r"(\d+(\.\d+)?\s*(GB|MB))", re.IGNORECASE))
+    if size_element:
+        file_size = size_element.strip()
+
     all_links = []
     for tag in soup.find_all('a', href=True):
         href = tag['href']
-        if "1fichier.com" in href or "pixeldrain.com" in href or "mediafire.com" in href:
+        if "1fichier.com" in href or "pixeldrain.com" in href or "mediafire.com" in href or "datanodes.to" in href:
             all_links.append(href)
         elif "qiwi.gg" in href and is_valid_qiwi_link(href):
             all_links.append(href)
 
-    filtered_links = {}
+    # Ordenar os links de acordo com a hierarquia
+    priority_order = ["1fichier", "datanodes", "mediafire", "qiwi", "pixeldrain"]
+    filtered_links = {key: None for key in priority_order}
+
     for link in all_links:
-        domain = None
         if "1fichier.com" in link:
-            domain = "1fichier"
-        elif "qiwi.gg" in link:
-            domain = "qiwi"
-        elif "pixeldrain.com" in link:
-            domain = "pixeldrain"
+            filtered_links["1fichier"] = link
+        elif "datanodes.to" in link:
+            filtered_links["datanodes"] = link
         elif "mediafire.com" in link:
-            domain = "mediafire"
+            filtered_links["mediafire"] = link
+        elif "qiwi.gg" in link:
+            filtered_links["qiwi"] = link
+        elif "pixeldrain.com" in link:
+            filtered_links["pixeldrain"] = link
 
-        if domain and domain not in filtered_links:
-            filtered_links[domain] = link
+    # Remover entradas vazias e manter a ordem
+    download_links = [filtered_links[key] for key in priority_order if filtered_links[key] is not None]
 
-    download_links = list(filtered_links.values())
-    return title, "", download_links, upload_date
+    return title, file_size, download_links, upload_date, game_url
 
-async def fetch_last_page_num(session, semaphore, base_url):
-    page_content = await fetch_page(session, base_url, semaphore)
+async def fetch_last_page_num(scraper, base_url):
+    page_content = await fetch_page(scraper, base_url)
     if not page_content:
         return 1
 
@@ -185,15 +208,6 @@ async def fetch_last_page_num(session, semaphore, base_url):
         if match:
             return int(match.group(1))
     return 1
-
-def find_duplicate_game(data, title):
-    """Verifica se existe um jogo duplicado e retorna o jogo se encontrado."""
-    normalized_new_title = normalize_title(title).lower()
-    for i, game in enumerate(data["downloads"]):
-        normalized_existing_title = normalize_title(game["title"]).lower()
-        if normalized_existing_title == normalized_new_title:
-            return i, game
-    return None, None
 
 def should_replace_game(existing_game, new_title, new_date):
     """Determina se deve substituir o jogo existente pelo novo."""
@@ -220,12 +234,12 @@ def should_replace_game(existing_game, new_title, new_date):
             
     return False
 
-async def process_page(session, page_url, semaphore, data, page_num):
+async def process_page(scraper, page_url, data, page_num, retry_queue, existing_links):
     global processed_games_count
     if processed_games_count >= MAX_GAMES:
         raise GameLimitReached()
 
-    page_content = await fetch_page(session, page_url, semaphore)
+    page_content = await fetch_page(scraper, page_url)
     if not page_content:
         return
 
@@ -247,25 +261,38 @@ async def process_page(session, page_url, semaphore, data, page_num):
                 
             a_tag = li.find('a', href=True)
             if a_tag and 'href' in a_tag.attrs:
-                tasks.append(fetch_game_details(session, a_tag['href'], semaphore))
+                game_url = a_tag['href']
+                # Pular jogos já presentes no JSON
+                if game_url in existing_links:
+                    print(f"{Fore.CYAN}[SKIPPED] Page {page_num}: {game_url} already in JSON")
+                    continue
+                tasks.append(fetch_game_details(scraper, game_url))
 
+    # Executar tarefas em paralelo
     games = await asyncio.gather(*tasks, return_exceptions=True)
     for game in games:
         if isinstance(game, Exception):
             print(f"{Fore.RED}Exception occurred while fetching game details: {game}")
             continue
             
-        if game is None or not isinstance(game, tuple) or len(game) != 4:
+        if game is None or not isinstance(game, tuple) or len(game) != 5:
             print(f"{Fore.RED}Invalid game data received")
             continue
 
         if processed_games_count >= MAX_GAMES:
             break
 
-        title, size, links, upload_date = game
+        title, _, links, upload_date, repack_link_source = game
 
         if not title:  # Add check for None/empty title
             print(f"{Fore.RED}[ERROR] Game with empty title skipped")
+            continue
+
+        # Verificar duplicatas pelo link imediatamente
+        duplicate_index, existing_game, action = find_duplicate_game(data, repack_link_source)
+        
+        if action == "IGNORE":
+            log_game_status("IGNORED", page_num, title)
             continue
 
         title = normalize_special_titles(title)
@@ -278,52 +305,40 @@ async def process_page(session, page_url, semaphore, data, page_num):
             print(f"Ignoring game with title: {title}")
             continue
 
-        # Nova lógica para verificar e atualizar duplicatas
-        duplicate_index, existing_game = find_duplicate_game(data, title)
-        
-        if existing_game:
-            if should_replace_game(existing_game, title, upload_date):
-                # Atualizar jogo existente
-                data["downloads"][duplicate_index] = {
-                    "title": title,
-                    "uris": links,
-                    "fileSize": "",
-                    "uploadDate": upload_date
-                }
-                log_game_status("UPDATED", page_num, title)
-            else:
-                log_game_status("IGNORED", page_num, title)
-            continue
-
         # Adicionar novo jogo
         data["downloads"].append({
             "title": title,
             "uris": links,
-            "fileSize": "",
-            "uploadDate": upload_date
+            "fileSize": "",  # Garantir que fileSize esteja presente e vazio
+            "uploadDate": upload_date,
+            "repackLinkSource": repack_link_source
         })
         log_game_status("NEW", page_num, title)
 
-async def cleanup():
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        task.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    # Adicionar jogos que falharam para a fila de retries
+    for game in games:
+        if isinstance(game, Exception) or game is None:
+            retry_queue.append(page_url)
 
-# Ajustar semáforos para melhor performance
-CATEGORY_SEMAPHORE_LIMIT = 2  # Reduzir para focar mais em cada categoria
-PAGE_SEMAPHORE_LIMIT = 20     # Reduzir para evitar sobrecarga
-GAME_SEMAPHORE_LIMIT = 40     # Reduzir para maior estabilidade
+async def retry_failed_games(scraper, retry_queue, data):
+    """Processa novamente os jogos que falharam."""
+    while retry_queue:
+        page_url = retry_queue.pop(0)
+        print(f"{Fore.YELLOW}Retrying failed game: {page_url}")
+        try:
+            await process_page(scraper, page_url, data, page_num=0, retry_queue=[])
+        except Exception as e:
+            print(f"{Fore.RED}Retry failed for {page_url}: {e}")
 
-async def process_category(session, base_url, data, page_semaphore, game_semaphore):
+async def process_category(scraper, base_url, data, page_semaphore, game_semaphore, existing_links):
     global processed_games_count
-    
+    retry_queue = []  # Fila para jogos que falharam
+
     if processed_games_count >= MAX_GAMES:
         return
 
     try:
-        last_page_num = await fetch_last_page_num(session, game_semaphore, base_url)
+        last_page_num = await fetch_last_page_num(scraper, base_url)
         pages = list(range(1, last_page_num + 1))
         
         print(f"\nProcessing category: {base_url}")
@@ -339,17 +354,76 @@ async def process_category(session, base_url, data, page_semaphore, game_semapho
             
             for page_num in batch:
                 page_url = f"{base_url}/page/{page_num}"
-                tasks.append(process_page(session, page_url, game_semaphore, data, page_num))
+                tasks.append(process_page(scraper, page_url, data, page_num, retry_queue, existing_links))  # Adicionado retry_queue
             
             if tasks:
                 await asyncio.gather(*tasks)
                 
             print(f"Processed pages {i+1} to {min(i+PAGE_SEMAPHORE_LIMIT, len(pages))} of {len(pages)}")
 
+        # Processar jogos que falharam
+        await retry_failed_games(scraper, retry_queue, data)
+
     except GameLimitReached:
         return
     except Exception as e:
         print(f"Error processing category {base_url}: {str(e)}")
+
+async def cleanup():
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+# Ajustar semáforos para maior paralelismo
+CATEGORY_SEMAPHORE_LIMIT = 3  # Processar até 3 categorias em paralelo
+PAGE_SEMAPHORE_LIMIT = 20  # Processar até 10 páginas em paralelo
+GAME_SEMAPHORE_LIMIT = 24     # Processar até 20 jogos em paralelo
+
+def load_existing_data(json_filename):
+    """Carrega o JSON existente do arquivo local."""
+    try:
+        with open(json_filename, "r", encoding="utf-8") as json_file:
+            return json.load(json_file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"name": "Shisuy's source", "downloads": []}
+
+def load_existing_links(json_filename):
+    """Carrega os links existentes do JSON para evitar duplicatas."""
+    try:
+        with open(json_filename, "r", encoding="utf-8") as json_file:
+            data = json.load(json_file)
+            return {game.get("repackLinkSource") for game in data.get("downloads", []) if game.get("repackLinkSource")}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+def filter_duplicates(data):
+    """Remove duplicatas, mantendo a versão online ou a mais recente."""
+    grouped_games = {}
+    
+    for game in data["downloads"]:
+        # Normalizar título base (remover sufixos como "Multiplayer")
+        base_title = re.sub(r"\s*\(.*?\)", "", game["title"]).strip()
+        
+        if base_title not in grouped_games:
+            grouped_games[base_title] = []
+        grouped_games[base_title].append(game)
+    
+    filtered_games = []
+    for base_title, games in grouped_games.items():
+        # Priorizar versão online
+        online_versions = [g for g in games if is_deadcode_version(g["title"])]
+        if online_versions:
+            # Escolher a versão online mais recente
+            best_game = max(online_versions, key=lambda g: g.get("uploadDate", ""))
+        else:
+            # Escolher a versão mais recente
+            best_game = max(games, key=lambda g: g.get("uploadDate", ""))
+        
+        filtered_games.append(best_game)
+    
+    data["downloads"] = filtered_games
 
 async def scrape_games():
     global processed_games_count
@@ -359,40 +433,42 @@ async def scrape_games():
     page_semaphore = asyncio.Semaphore(PAGE_SEMAPHORE_LIMIT)
     game_semaphore = asyncio.Semaphore(GAME_SEMAPHORE_LIMIT)
     
-    data = {
-        "name": "Shisuy's source",
-        "downloads": []
-    }
+    # Carregar dados existentes do JSON
+    data = load_existing_data(JSON_FILENAME)
+    existing_links = load_existing_links(JSON_FILENAME)  # Carregar links existentes
 
     try:
-        async with aiohttp.ClientSession() as session:
-            category_tasks = []
+        scraper = cloudscraper.create_scraper()  # Substitui o ClientSession do aiohttp
+        category_tasks = []
+        
+        # Processa categorias em paralelo
+        for i in range(0, len(BASE_URLS), CATEGORY_SEMAPHORE_LIMIT):
+            if processed_games_count >= MAX_GAMES:
+                break
+                
+            batch = BASE_URLS[i:i + CATEGORY_SEMAPHORE_LIMIT]
+            tasks = []
             
-            # Processa categorias em paralelo
-            for i in range(0, len(BASE_URLS), CATEGORY_SEMAPHORE_LIMIT):
-                if processed_games_count >= MAX_GAMES:
-                    break
-                    
-                batch = BASE_URLS[i:i + CATEGORY_SEMAPHORE_LIMIT]
-                tasks = []
-                
-                for base_url in batch:
-                    async with category_semaphore:
-                        tasks.append(
-                            process_category(
-                                session, 
-                                base_url, 
-                                data, 
-                                page_semaphore, 
-                                game_semaphore
-                            )
+            for base_url in batch:
+                async with category_semaphore:
+                    tasks.append(
+                        process_category(
+                            scraper,
+                            base_url,
+                            data,
+                            page_semaphore=None,  # Semáforos não são mais necessários
+                            game_semaphore=None,
+                            existing_links=existing_links  # Passar links existentes
                         )
-                
-                if tasks:
-                    await asyncio.gather(*tasks)
-                    
-            save_data(JSON_FILENAME, data)
-            print(f"\nScraping finished. Total games processed: {processed_games_count}")
+                    )
+            
+            if tasks:
+                await asyncio.gather(*tasks)
+        
+        # Filtrar duplicatas antes de salvar
+        filter_duplicates(data)
+        save_data(JSON_FILENAME, data)
+        print(f"\nScraping finished. Total games processed: {processed_games_count}")
     
     except Exception as e:
         print(f"Error: {str(e)}")
