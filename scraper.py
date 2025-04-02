@@ -22,7 +22,7 @@ BASE_URLS = ["https://repack-games.com/category/latest-updates/"] + [
 
 JSON_FILENAME = "shisuyssource.json"
 INVALID_JSON_FILENAME = "invalid_games.json"
-MAX_GAMES = 1000000
+MAX_GAMES = 100000000
 CONCURRENT_REQUESTS = 6000
 REGEX_TITLE = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 HEADERS = {
@@ -94,11 +94,11 @@ def save_invalid_game(title, reason, links=None):
     with open(INVALID_JSON_FILENAME, 'w', encoding='utf-8') as f:
         json.dump(invalid_data, f, ensure_ascii=False, indent=4)
 
-async def fetch_page(scraper, url, retries=2):  # Reduzido para 2 tentativas
+async def fetch_page(scraper, url, retries=3):
     """Fetch a page with retries in case of temporary failures."""
     for attempt in range(retries):
         try:
-            response = scraper.get(url, headers=HEADERS, timeout=8)  # Reduzido timeout para 8 segundos
+            response = scraper.get(url, headers=HEADERS, timeout=10)  # Reduzido timeout para 10 segundos
             if response.status_code == 200:
                 return response.text
             print(f"Attempt {attempt + 1} failed for {url} with status {response.status_code}")
@@ -209,31 +209,6 @@ async def fetch_last_page_num(scraper, base_url):
             return int(match.group(1))
     return 1
 
-def should_replace_game(existing_game, new_title, new_date):
-    """Determina se deve substituir o jogo existente pelo novo."""
-    existing_is_online = is_deadcode_version(existing_game["title"])
-    new_is_online = is_deadcode_version(new_title)
-    
-    # Se o jogo existente é 0xdeadcode e o novo não é, não substituir
-    if existing_is_online and not new_is_online:
-        return False
-        
-    # Se o novo é 0xdeadcode e o existente não é, substituir
-    if new_is_online and not existing_is_online:
-        return True
-        
-    # Se ambos são ou não são 0xdeadcode, verificar datas
-    if not existing_game.get("uploadDate") and new_date:
-        return True
-        
-    if existing_game.get("uploadDate") and new_date:
-        existing_date = datetime.fromisoformat(existing_game["uploadDate"])
-        new_date_obj = datetime.fromisoformat(new_date)
-        if new_date_obj > existing_date:
-            return True
-            
-    return False
-
 async def process_page(scraper, page_url, data, page_num, retry_queue, existing_links):
     global processed_games_count
     if processed_games_count >= MAX_GAMES:
@@ -268,7 +243,6 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
                     continue
                 tasks.append(fetch_game_details(scraper, game_url))
 
-    # Executar tarefas em paralelo
     games = await asyncio.gather(*tasks, return_exceptions=True)
     for game in games:
         if isinstance(game, Exception):
@@ -309,7 +283,7 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
         data["downloads"].append({
             "title": title,
             "uris": links,
-            "fileSize": "",  # Garantir que fileSize esteja presente e vazio
+            "fileSize": "",
             "uploadDate": upload_date,
             "repackLinkSource": repack_link_source
         })
@@ -376,10 +350,10 @@ async def cleanup():
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
-# Ajustar semáforos para maior paralelismo
-CATEGORY_SEMAPHORE_LIMIT = 3  # Processar até 3 categorias em paralelo
-PAGE_SEMAPHORE_LIMIT = 20  # Processar até 10 páginas em paralelo
-GAME_SEMAPHORE_LIMIT = 24     # Processar até 20 jogos em paralelo
+# Ajustar semáforos para melhor performance
+CATEGORY_SEMAPHORE_LIMIT = 1  # Reduzido para processar uma categoria por vez
+PAGE_SEMAPHORE_LIMIT = 5     # Reduzido para processar menos páginas em paralelo
+GAME_SEMAPHORE_LIMIT = 10    # Reduzido para maior estabilidade
 
 def load_existing_data(json_filename):
     """Carrega o JSON existente do arquivo local."""
@@ -397,33 +371,6 @@ def load_existing_links(json_filename):
             return {game.get("repackLinkSource") for game in data.get("downloads", []) if game.get("repackLinkSource")}
     except (FileNotFoundError, json.JSONDecodeError):
         return set()
-
-def filter_duplicates(data):
-    """Remove duplicatas, mantendo a versão online ou a mais recente."""
-    grouped_games = {}
-    
-    for game in data["downloads"]:
-        # Normalizar título base (remover sufixos como "Multiplayer")
-        base_title = re.sub(r"\s*\(.*?\)", "", game["title"]).strip()
-        
-        if base_title not in grouped_games:
-            grouped_games[base_title] = []
-        grouped_games[base_title].append(game)
-    
-    filtered_games = []
-    for base_title, games in grouped_games.items():
-        # Priorizar versão online
-        online_versions = [g for g in games if is_deadcode_version(g["title"])]
-        if online_versions:
-            # Escolher a versão online mais recente
-            best_game = max(online_versions, key=lambda g: g.get("uploadDate", ""))
-        else:
-            # Escolher a versão mais recente
-            best_game = max(games, key=lambda g: g.get("uploadDate", ""))
-        
-        filtered_games.append(best_game)
-    
-    data["downloads"] = filtered_games
 
 async def scrape_games():
     global processed_games_count
@@ -464,11 +411,9 @@ async def scrape_games():
             
             if tasks:
                 await asyncio.gather(*tasks)
-        
-        # Filtrar duplicatas antes de salvar
-        filter_duplicates(data)
-        save_data(JSON_FILENAME, data)
-        print(f"\nScraping finished. Total games processed: {processed_games_count}")
+                    
+            save_data(JSON_FILENAME, data)
+            print(f"\nScraping finished. Total games processed: {processed_games_count}")
     
     except Exception as e:
         print(f"Error: {str(e)}")
