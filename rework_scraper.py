@@ -18,16 +18,28 @@ from webdriver_manager.chrome import ChromeDriverManager
 from queue import Queue
 from typing import List, Tuple  # Adicionado para corrigir o erro de tipagem
 import subprocess  # Adicionado para executar comandos do sistema
+from stem import Signal
+from stem.control import Controller
+from httpx_socks import AsyncProxyTransport
+import os
+from time import time
+import math
+from datetime import timedelta
 
 init(autoreset=True)
 
 SOURCE_JSON = "source.json"
 BLACKLIST_JSON = "blacklist.json"
 SHISUY_SOURCE_JSON = "shisuyssource.json"
-REGEX_TITLE_NORMALIZATION = r"\s*\(.*?\)"  # Remove sufixos como "(Multiplayer)", "(VR)", etc.
+GOFILE_TIMEOUTS_JSON = "gofile_timeouts.json"
+VALID_LINKS_JSON = "valid_links.json"
+INVALID_LINKS_JSON = "invalid_links.json"
+PROGRESS_JSON = "validation_progress.json"
+# Updated title normalization regex to remove version/build info
+REGEX_TITLE_NORMALIZATION = r"\s*\([^)]*(?:v\d+(?:\.\d+){1,}|Build \d+|R\d+\.\d+|Ch\.\s*\d+\s*v\d+(?:\.\d+)?|Executive Edition Free Download)[^)]*\)"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/121.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
     "Accept-Encoding": "gzip, deflate, br",
@@ -38,8 +50,7 @@ HEADERS = {
 }
 
 def normalize_title(title):
-    """Normaliza o título removendo sufixos e espaços extras."""
-    return re.sub(REGEX_TITLE_NORMALIZATION, "", title).strip().lower()
+    return re.sub(REGEX_TITLE_NORMALIZATION, "", title, flags=re.IGNORECASE).strip().lower()
 
 def load_json(filename):
     """Carrega um arquivo JSON."""
@@ -56,14 +67,13 @@ def save_json(filename, data):
 
 def is_valid_link(link):
     """Verifica se o link é válido."""
-    return any(domain in link for domain in ["1fichier.com", "pixeldrain.com", "mediafire.com", "datanodes.to", "qiwi.gg"])
+    return any(domain in link for domain in ["1fichier.com", "gofile.io", "pixeldrain.com", "mediafire.com", "datanodes.to", "qiwi.gg"])
 
 async def is_valid_qiwi_link(link, client):
     """Verifica se o link do Qiwi é válido e extrai o tamanho do arquivo."""
     try:
         response = await client.get(link, timeout=10)
         if response.status_code != 200:  # Verifica se o status HTTP é válido
-            print(f"{Fore.RED}[INVALID LINK] Qiwi link {link} returned status {response.status_code}")
             return False, None
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -73,20 +83,16 @@ async def is_valid_qiwi_link(link, client):
         if title_element:
             file_name = title_element.get_text(strip=True)
             if "TRNT.rar" in file_name or ".torrent" in file_name:
-                print(f"{Fore.RED}[INVALID LINK] Qiwi link {link} contains a torrent file ({file_name})")
                 return False, None
 
         # Extrair o tamanho do arquivo
         size_element = soup.find(string=re.compile(r"Download\s+\d+(\.\d+)?\s*(GB|MB)", re.IGNORECASE))
         if size_element:
             file_size = size_element.strip().replace("Download ", "")
-            print(f"{Fore.GREEN}[VALID LINK] Qiwi link {link} with file size {file_size}")
             return True, file_size
 
-        print(f"{Fore.RED}[INVALID LINK] Qiwi link {link} does not contain file size information")
         return False, None
-    except Exception as e:
-        print(f"{Fore.RED}[ERROR] Failed to validate Qiwi link {link}: {e}")
+    except Exception:
         return False, None
 
 async def is_valid_datanodes_link(link, client):
@@ -94,7 +100,6 @@ async def is_valid_datanodes_link(link, client):
     try:
         response = await client.get(link, timeout=10)
         if response.status_code != 200:  # Verifica se o status HTTP é válido
-            print(f"{Fore.RED}[INVALID LINK] Datanodes link {link} returned status {response.status_code}")
             return False, None
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -104,20 +109,16 @@ async def is_valid_datanodes_link(link, client):
         if title_element:
             file_name = title_element.get_text(strip=True)
             if "TRNT.rar" in file_name or ".torrent" in file_name:
-                print(f"{Fore.RED}[INVALID LINK] Datanodes link {link} contains a torrent file ({file_name})")
                 return False, None
 
         # Extrair o tamanho do arquivo
         size_element = soup.find('small', class_='m-0 text-xs text-gray-500 font-bold')
         if size_element:
             file_size = size_element.get_text(strip=True)  # Corrigido o parêntese
-            print(f"{Fore.GREEN}[VALID LINK] Datanodes link {link} with file size {file_size}")
             return True, file_size
 
-        print(f"{Fore.RED}[INVALID LINK] Datanodes link {link} does not contain file size information")
         return False, None
-    except Exception as e:
-        print(f"{Fore.RED}[ERROR] Failed to validate Datanodes link {link}: {e}")
+    except Exception:
         return False, None
 
 async def is_valid_pixeldrain_link(link, client):
@@ -130,19 +131,16 @@ async def is_valid_pixeldrain_link(link, client):
         # Fazer a requisição para a API do Pixeldrain
         response = await client.get(api_url, timeout=10)
         if response.status_code != 200:  # Verifica se o status HTTP é válido
-            print(f"{Fore.RED}[INVALID LINK] Pixeldrain API for {link} returned status {response.status_code}")
             return False, None
 
         # Parsear a resposta JSON
         file_info = response.json()
         if file_info.get("success") is not True:
-            print(f"{Fore.RED}[INVALID LINK] Pixeldrain API for {link} returned an error")
             return False, None
 
         # Verificar se o nome do arquivo contém "TRNT.rar", ".torrent" ou "bittorrent"
         file_name = file_info.get("name", "").lower()
         if any(indicator in file_name for indicator in ["trnt.rar", ".torrent", "bittorrent"]):
-            print(f"{Fore.RED}[INVALID LINK] Pixeldrain link {link} contains a torrent indicator ({file_name})")
             return False, None
 
         # Extrair o tamanho do arquivo
@@ -150,21 +148,18 @@ async def is_valid_pixeldrain_link(link, client):
         if file_size_bytes > 0:
             # Converter o tamanho do arquivo para MB ou GB
             file_size = f"{file_size_bytes / (1024 ** 2):.2f} MB" if file_size_bytes < (1024 ** 3) else f"{file_size_bytes / (1024 ** 3):.2f} GB"
-            print(f"{Fore.GREEN}[VALID LINK] Pixeldrain link {link} with size {file_size}")
             return True, file_size
 
-        print(f"{Fore.RED}[INVALID LINK] Pixeldrain link {link} does not contain valid size information")
         return False, None
-    except Exception as e:
-        print(f"{Fore.RED}[ERROR] Failed to validate Pixeldrain link {link}: {e}")
+    except Exception:
         return False, None
 
 def extract_mediafire_key(url):
-    """Extract the file key from a MediaFire URL."""
+    """Extract the file key from a MediaFire URL.
+    Handles extra '/file' at the end of the URL."""
+    # Remove trailing '/file' (with or without a slash)
+    url = re.sub(r'/file/?$', '', url)
     try:
-        # Handle both formats:
-        # https://www.mediafire.com/file/KEY/filename/file
-        # https://www.mediafire.com/file/KEY
         if "/file/" in url:
             parts = url.split("/file/")[1].split("/")
             return parts[0]
@@ -181,18 +176,14 @@ def check_mediafire_link(link):
 
         # Verificar se houve redirecionamento para uma página de erro
         if "error.php" in driver.current_url:
-            print(f"{Fore.RED}[INVALID LINK] MediaFire redirected to error page: {driver.current_url}")
             return None
 
         # Verificar se o título da página indica que o arquivo é inválido
         if "File sharing and storage made simple" in driver.title:
-            print(f"{Fore.RED}[INVALID LINK] MediaFire: {link} (Invalid file)")
             return None
 
-        print(f"{Fore.GREEN}[VALID LINK] MediaFire: {link}")
         return link
-    except Exception as e:
-        print(f"{Fore.RED}[ERROR] Falha ao validar {link}: {e}")
+    except Exception:
         return None
     finally:
         driver_pool.return_driver(driver)
@@ -204,13 +195,11 @@ async def validate_mediafire_link(session, link):
     with ThreadPoolExecutor(max_workers=3) as executor:
         result = await loop.run_in_executor(executor, check_mediafire_link, link)
         if not result:
-            print(f"{Fore.RED}[INVALID] MediaFire: {link} (WebDriver validation failed)")
             return None, ""
 
     # Se o WebDriver validar, usar a API para obter informações
     quick_key = extract_mediafire_key(link)
     if not quick_key:
-        print(f"{Fore.RED}[INVALID] MediaFire: {link} (Invalid quick key)")
         return None, ""
 
     api_url = f"https://www.mediafire.com/api/1.1/file/get_info.php?quick_key={quick_key}&response_format=json"
@@ -226,20 +215,16 @@ async def validate_mediafire_link(session, link):
 
                     # Verificar se o nome do arquivo contém ".torrent"
                     if ".torrent" in file_name:
-                        print(f"{Fore.RED}[INVALID] MediaFire: {link} (File name contains '.torrent')")
                         return None, ""
 
                     formatted_size = format_size(int(file_size))
-                    print(f"{Fore.GREEN}[VALID] MediaFire: {link} ({formatted_size})")
                     return link, formatted_size
                 else:
-                    print(f"{Fore.RED}[INVALID] MediaFire API failed for {link}")
+                    return None, ""
             else:
-                print(f"{Fore.RED}[ERROR] MediaFire API returned status {response.status_code} for {link}")
-    except Exception as e:
-        print(f"{Fore.RED}[ERROR] MediaFire API error for {link}: {e}")
-
-    return None, ""
+                return None, ""
+    except Exception:
+        return None, ""
 
 def format_size(size_in_bytes):
     """Formata o tamanho do arquivo em MB ou GB."""
@@ -248,7 +233,7 @@ def format_size(size_in_bytes):
     elif size_in_bytes < 1024 ** 3:
         return f"{size_in_bytes / (1024 ** 2):.2f} MB"
     else:
-        return f"{size_in_bytes / (1024 ** 3)::.2f} GB"
+        return f"{size_in_bytes / (1024 ** 3):.2f} GB"
 
 PROXY_API_URL = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&protocol=http&proxy_format=protocolipport&format=text&anonymity=Elite,Anonymous&timeout=1019"
 
@@ -264,18 +249,31 @@ async def fetch_proxies() -> List[str]:
                     if proxies:
                         return [f"http://{proxy}" for proxy in proxies]  # Adicionar prefixo http://
                 raise Exception("Failed to fetch proxies: No proxies in response")
-        except (httpx.ReadTimeout, httpx.RequestError) as e:
-            print(f"[WARNING] Attempt {attempt + 1} to fetch proxies failed: {e}")
+        except (httpx.ReadTimeout, httpx.RequestError):
             await asyncio.sleep(2 ** attempt)  # Backoff exponencial
     raise Exception("Failed to fetch proxies after multiple attempts")
 
+def fetch_page(scraper, url, retries=3):
+    # Updated fetch_page logging with colorama
+    for attempt in range(retries):
+        try:
+            response = scraper.get(url, headers=HEADERS, timeout=10)
+            if response.status_code == 200:
+                return response.text
+            print(f"{Fore.YELLOW}Attempt {attempt + 1} failed for {url} with status {response.status_code}")
+        except Exception as e:
+            print(f"{Fore.RED}Attempt {attempt + 1} failed for {url}: {str(e)}")
+        asyncio.sleep(2 ** attempt)
+    print(f"{Fore.RED}Failed to fetch {url} after {retries} retries")
+    return None
+
 async def validate_links(game, total_games, current_index):
     """Valida os links de um jogo e atualiza o tamanho do arquivo."""
-    print(f"{Fore.BLUE}[PROGRESS] Validating game {current_index}/{total_games}")
     valid_links = []
+    invalid_links = []
     async with httpx.AsyncClient(follow_redirects=True) as client:
         tasks = []
-        link_mapping = {}  # Mapeia índices para links para exibir logs corretamente
+        link_mapping = {}  # Mapeia índices para links para exibir logs
         for index, link in enumerate(game["uris"]):
             if "qiwi.gg" in link:
                 tasks.append(is_valid_qiwi_link(link, client))
@@ -289,24 +287,36 @@ async def validate_links(game, total_games, current_index):
             elif "mediafire.com" in link:
                 tasks.append(validate_mediafire_link(client, link))
                 link_mapping[len(tasks) - 1] = link
-            elif is_valid_link(link):  # Para outros links, apenas verifica o domínio
+            elif "gofile.io" in link:
+                tasks.append(validate_gofile_link_api(link))
+                link_mapping[len(tasks) - 1] = link
+            elif is_valid_link(link):
                 valid_links.append(link)
         if tasks:
             results = await asyncio.gather(*tasks)
             for task_index, (is_valid, file_size) in enumerate(results):
                 link = link_mapping[task_index]
                 if is_valid:
-                    print(f"{Fore.GREEN}[VALID LINK] {link}")
-                    game["fileSize"] = file_size  # Atualiza o tamanho do arquivo
+                    print(f"{Fore.GREEN}[VALID LINK] {link} - {file_size}")
+                    game["fileSize"] = file_size
                     valid_links.append(link)
+                    # Save valid link immediately
+                    save_progress({**load_progress()[0], game["title"]: valid_links}, 
+                                load_progress()[1], current_index)
                 else:
                     print(f"{Fore.RED}[INVALID LINK] {link}")
-    # Atualiza links válidos
+                    invalid_links.append(link)
+                    # Save invalid link immediately
+                    save_progress(load_progress()[0],
+                                {**load_progress()[1], game["title"]: invalid_links}, 
+                                current_index)
+                # Log progress
+                print(f"{Fore.CYAN}Progress: Validated {task_index + 1}/{len(tasks)} links for game {current_index + 1}/{total_games}")
     game["uris"] = valid_links
-    # Se único link é de 1fichier, remove e marca como inválido
     if len(valid_links) == 1 and "1fichier.com" in valid_links[0]:
-        print(f"{Fore.RED}[INVALID LINK] {valid_links[0]} is the only download and is from 1fichier; marking game as invalid.")
         game["uris"] = []
+    # Log game validation summary with correct count
+    print(f"{Fore.BLUE}{current_index + 1}/{total_games} games validated")
     return game
 
 def decide_game_to_keep(existing_game, new_game):
@@ -336,12 +346,39 @@ def decide_game_to_keep(existing_game, new_game):
     if existing_date and new_date:
         return new_game if new_date > existing_date else existing_game
 
-    # Caso não haja critério claro, manter o existente
     return existing_game
 
+MAX_CONCURRENT_TASKS = 5
+BATCH_SIZE = 10
+
+class ProgressTracker:
+    def __init__(self, total):
+        self.total = total
+        self.current = 0
+        self.start_time = time()
+        self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+    
+    def update(self, amount=1):
+        self.current += amount
+        elapsed_time = time() - self.start_time
+        items_per_second = self.current / elapsed_time if elapsed_time > 0 else 0
+        remaining_items = self.total - self.current
+        eta_seconds = remaining_items / items_per_second if items_per_second > 0 else 0
+        eta = str(timedelta(seconds=math.ceil(eta_seconds)))
+        
+        percent = (self.current / self.total) * 100
+        print(f"{Fore.CYAN}Progress: {percent:.1f}% ({self.current}/{self.total}) - ETA: {eta}")
+
 async def process_duplicates(games):
-    """Processa duplicatas e decide quais jogos manter."""
+    """Processa duplicatas com processamento em paralelo e tracking de progresso."""
+    # Load previous progress
+    valid_links_dict, invalid_links_dict, last_processed = load_progress()
+    
     grouped_games = {}
+    tracker = ProgressTracker(len(games))
+    tracker.current = last_processed  # Resume from last position
+    
+    # Group games by normalized title
     for game in games:
         normalized_title = normalize_title(game["title"])
         if normalized_title not in grouped_games:
@@ -350,22 +387,47 @@ async def process_duplicates(games):
 
     valid_games = []
     removed_games = []
+    
+    async def process_game_group(group_games):
+        nonlocal valid_games, removed_games
+        async with tracker.semaphore:
+            sorted_games = sorted(
+                group_games,
+                key=lambda g: datetime.fromisoformat(g.get("uploadDate", "1970-01-01T00:00:00")),
+                reverse=True
+            )
+            
+            # Skip already processed games
+            game_title = normalize_title(sorted_games[0]["title"])
+            if game_title in valid_links_dict:
+                print(f"{Fore.CYAN}Skipping already processed game: {game_title}")
+                if valid_links_dict[game_title]:  # If has valid links
+                    valid_games.append(sorted_games[0])
+                    removed_games.extend(sorted_games[1:])
+                else:
+                    removed_games.extend(sorted_games)
+                return
+                
+            for game in sorted_games:
+                validated = await validate_links(game, total_games=len(games), current_index=tracker.current)
+                tracker.update()
+                if validated["uris"]:
+                    valid_games.append(validated)
+                    removed_games.extend([g for g in group_games if g != validated])
+                    break
+            else:
+                removed_games.extend(group_games)
 
-    total_games = len(games)  # Total de jogos para o progresso
-    for current_index, (title, duplicates) in enumerate(grouped_games.items(), start=1):
-        if len(duplicates) == 1:
-            game = await validate_links(duplicates[0], total_games, current_index)  # Valida os links do jogo
-            valid_games.append(game)
-        else:
-            # Decidir qual jogo manter
-            best_game = duplicates[0]
-            for game in duplicates[1:]:
-                best_game = decide_game_to_keep(best_game, game)
-            best_game = await validate_links(best_game, total_games, current_index)  # Valida os links do jogo escolhido
-            valid_games.append(best_game)
-
-            # Adicionar os jogos removidos à blacklist
-            removed_games.extend([game for game in duplicates if game != best_game])
+    # Process groups in batches
+    tasks = []
+    for group in grouped_games.values():
+        tasks.append(process_game_group(group))
+        if len(tasks) >= BATCH_SIZE:
+            await asyncio.gather(*tasks)
+            tasks = []
+    
+    if tasks:
+        await asyncio.gather(*tasks)
 
     return valid_games, removed_games
 
@@ -400,6 +462,218 @@ class DriverPool:
 # Inicializar o pool de WebDrivers
 driver_pool = DriverPool(size=3)
 
+def rotate_tor_identity():
+    """Solicita um novo ip ao Tor enviando o sinal NEWNYM."""
+    try:
+        with Controller.from_port(port=9051) as controller:
+            controller.authenticate()  # Ajuste se for necessário senha
+            controller.signal(Signal.NEWNYM)
+            print(f"{Fore.BLUE}[TOR] New tor identity issued.")
+    except Exception:
+        print(f"{Fore.RED}[TOR ERROR] Failed to rotate Tor identity")
+
+async def validate_gofile_link_tor(link: str, retries: int = 3) -> Tuple[bool, str]:
+    """Valida um link do Gofile usando Tor com IP rotativo.
+    Usa BeautifulSoup para scraping da página para extrair o tamanho do arquivo (GB ou MB)
+    e rejeita links com palavras indesejadas como 'torrent', 'this content does not exist' ou 'cold'."""
+    proxy_url = "socks5://127.0.0.1:9050"
+    transport = AsyncProxyTransport.from_url(proxy_url)
+    attempt = 0
+    while attempt < retries:
+        try:
+            rotate_tor_identity()
+            async with httpx.AsyncClient(transport=transport, follow_redirects=True) as client:
+                response = await client.get(link, timeout=10)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    content_text = soup.get_text(separator=" ", strip=True).lower()
+                    for bad in ["torrent", "this content does not exist", "cold"]:
+                        if bad in content_text:
+                            return False, ""
+                    size_match = re.search(r"(\d+(?:\.\d+)?\s*(GB|MB))", content_text, re.IGNORECASE)
+                    file_size = size_match.group(1) if size_match else ""
+                    if not file_size:
+                        return False, ""
+                    return True, file_size
+                else:
+                    return False, ""
+        except Exception:
+            if "Proxy connection timed out" in str(e):
+                await asyncio.sleep(2 ** attempt)
+                attempt += 1
+            else:
+                return False, ""
+    return False, ""
+
+WT = "4fd6sg89d7s6"  # Constante para uso na API do Gofile
+GOFILE_TOKEN = None
+
+async def authorize_gofile():
+    """Authorize with Gofile API and store the token globally."""
+    global GOFILE_TOKEN
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post("https://api.gofile.io/accounts", headers=HEADERS)
+        if response.status_code == 200 and response.json().get("status") == "ok":
+            GOFILE_TOKEN = response.json()["data"]["token"]
+            return GOFILE_TOKEN
+        else:
+            return ""
+    except Exception:
+        return ""
+
+def save_gofile_timeout(link, error):
+    data = {"timeouts": []}
+    if os.path.exists(GOFILE_TIMEOUTS_JSON):
+        try:
+            with open(GOFILE_TIMEOUTS_JSON, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {"timeouts": []}
+    data["timeouts"].append({
+        "link": link,
+        "error": error,
+        "timestamp": datetime.now().isoformat()
+    })
+    with open(GOFILE_TIMEOUTS_JSON, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+async def cleanup_gofile_timeouts(max_age_hours=24):
+    """Remove timeout entries older than max_age_hours."""
+    if os.path.exists(GOFILE_TIMEOUTS_JSON):
+        try:
+            with open(GOFILE_TIMEOUTS_JSON, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            now = datetime.now()
+            data["timeouts"] = [
+                timeout for timeout in data["timeouts"]
+                if (now - datetime.fromisoformat(timeout["timestamp"])).total_seconds() < max_age_hours * 3600
+            ]
+            with open(GOFILE_TIMEOUTS_JSON, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"{Fore.RED}Error cleaning up timeouts: {str(e)}")
+
+async def validate_gofile_link_api(link: str, retries: int = 3) -> Tuple[bool, str]:
+    await cleanup_gofile_timeouts()
+    m = re.search(r"gofile\.io/d/([^/?]+)", link)
+    if not m:
+        return False, ""
+    
+    file_id = m.group(1)
+    api_url = f"https://api.gofile.io/contents/{file_id}?wt={WT}"
+    
+    if not GOFILE_TOKEN:
+        await authorize_gofile()
+    
+    headers = {**HEADERS, "Authorization": f"Bearer {GOFILE_TOKEN}"}
+    transport = AsyncProxyTransport.from_url("socks5://127.0.0.1:9050")
+    last_error = ""
+    
+    # Add rate limiting delay
+    await asyncio.sleep(1)
+    
+    for attempt in range(retries):
+        try:
+            async with httpx.AsyncClient(timeout=15, transport=transport) as client:
+                response = await client.get(api_url, headers=headers)
+                
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    if not isinstance(data, dict):
+                        last_error = "Invalid JSON response"
+                        continue
+                        
+                    if data.get("status") == "ok":
+                        content = data.get("data", {})
+                        if isinstance(content, dict) and content.get("type") == "folder":
+                            children = content.get("children", {})
+                            if children:
+                                first_child = next(iter(children.values()))
+                                name = first_child.get("name", "").lower()
+                                if any(bad in name for bad in ["torrent", "this content does not exist", "cold"]):
+                                    return False, ""
+                                    
+                                size_bytes = first_child.get("size")
+                                if size_bytes and str(size_bytes).isdigit():
+                                    bytes_val = int(size_bytes)
+                                    if bytes_val > 0:
+                                        if bytes_val < 1024:
+                                            size_str = f"{bytes_val} B"
+                                        elif bytes_val < 1024 ** 2:
+                                            size_str = f"{(bytes_val / 1024):.2f} KB"
+                                        elif bytes_val < 1024 ** 3:
+                                            size_str = f"{(bytes_val / (1024 ** 2)):.2f} MB"
+                                        else:
+                                            size_str = f"{(bytes_val / (1024 ** 3)):.2f} GB"
+                                        return True, size_str
+                
+                except json.JSONDecodeError:
+                    last_error = "Invalid JSON response"
+                    continue
+                    
+            last_error = f"Status code {response.status_code}"
+            
+        except Exception as e:
+            last_error = str(e)
+            if "timed out" in last_error.lower():
+                await asyncio.sleep(2 ** attempt)
+                continue
+                
+        # Exponential backoff between retries
+        if attempt < retries - 1:
+            await asyncio.sleep(2 ** attempt)
+            
+    save_gofile_timeout(link, last_error)
+    return False, ""
+
+def log_game_status(status, page, game_title, error=""):
+    # Updated log output with colorama stamps for all statuses.
+    if status == "NEW":
+        print(f"{Fore.GREEN}[VALID] Page {page}: {game_title} - New game added")
+    elif status == "UPDATED":
+        print(f"{Fore.YELLOW}[UPDATED] Page {page}: {game_title}")
+    elif status == "IGNORED":
+        print(f"{Fore.CYAN}[SKIPPED] Page {page}: {game_title} - Duplicate or ignored")
+    elif status == "NO_LINKS":
+        print(f"{Fore.RED}[INVALID] Page {page}: {game_title} - No links found")
+    elif status == "ERROR":
+        print(f"{Fore.MAGENTA}[ERROR] Page {page}: {game_title} - {error}")
+
+def save_progress(valid_links, invalid_links, current_index):
+    """Save validation progress to files."""
+    try:
+        with open(VALID_LINKS_JSON, "w", encoding="utf-8") as f:
+            json.dump(valid_links, f, ensure_ascii=False, indent=4)
+        with open(INVALID_LINKS_JSON, "w", encoding="utf-8") as f:
+            json.dump(invalid_links, f, ensure_ascii=False, indent=4)
+        with open(PROGRESS_JSON, "w", encoding="utf-8") as f:
+            json.dump({"last_index": current_index}, f)
+    except Exception as e:
+        print(f"{Fore.RED}Error saving progress: {str(e)}")
+
+def load_progress():
+    """Load validation progress from files."""
+    valid_links = {}
+    invalid_links = {}
+    last_index = 0
+    
+    try:
+        if os.path.exists(VALID_LINKS_JSON):
+            with open(VALID_LINKS_JSON, "r", encoding="utf-8") as f:
+                valid_links = json.load(f)
+        if os.path.exists(INVALID_LINKS_JSON):
+            with open(INVALID_LINKS_JSON, "r", encoding="utf-8") as f:
+                invalid_links = json.load(f)
+        if os.path.exists(PROGRESS_JSON):
+            with open(PROGRESS_JSON, "r", encoding="utf-8") as f:
+                last_index = json.load(f)["last_index"]
+    except Exception as e:
+        print(f"{Fore.YELLOW}Warning loading progress: {str(e)}")
+        
+    return valid_links, invalid_links, last_index
+
 async def main():
     # Carregar o JSON original
     shisuy_data = load_json(SHISUY_SOURCE_JSON)
@@ -411,10 +685,9 @@ async def main():
     # Salvar resultados
     save_json(SOURCE_JSON, {"downloads": valid_games})
     save_json(BLACKLIST_JSON, {"removed": removed_games})
-
-    print(f"{Fore.GREEN}Processing complete!")
-    print(f"{Fore.GREEN}Valid games saved to {SOURCE_JSON}")
-    print(f"{Fore.YELLOW}Removed games saved to {BLACKLIST_JSON}")
+    total_valid = len(valid_games)
+    total_removed = len(removed_games)
+    print(f"Summary: Validated = {total_valid} games; Removed = {total_removed} games.")
 
 if __name__ == "__main__":
     asyncio.run(main())

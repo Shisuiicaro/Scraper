@@ -21,8 +21,8 @@ BASE_URLS = ["https://repack-games.com/category/latest-updates/"] + [
 ]
 
 JSON_FILENAME = "shisuyssource.json"
-INVALID_JSON_FILENAME = "invalid_games.json"
-MAX_GAMES = 100000000
+BLACKLIST_JSON = "blacklist.json"  # Use blacklist.json instead of invalid_games.json
+MAX_GAMES = 1000000 
 CONCURRENT_REQUESTS = 6000
 REGEX_TITLE = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 HEADERS = {
@@ -77,22 +77,22 @@ def log_game_status(status, page, game_title):
     elif status == "NO_LINKS":
         print(f"{Fore.RED}[NO LINKS] Page {page}: {game_title}")
 
-def load_invalid_games():
+def load_blacklist():
+    """Load invalid games from BLACKLIST_JSON."""
     try:
-        with open(INVALID_JSON_FILENAME, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        with open(BLACKLIST_JSON, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("removed", [])
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"updated": datetime.now().isoformat(), "invalid_games": []}
+        return []
 
-def save_invalid_game(title, reason, links=None):
-    invalid_data = load_invalid_games()
-    invalid_data["updated"] = datetime.now().isoformat()
-    invalid_game = {"title": title, "reason": reason, "date": datetime.now().isoformat()}
-    if links:
-        invalid_game["links"] = links
-    invalid_data["invalid_games"].append(invalid_game)
-    with open(INVALID_JSON_FILENAME, 'w', encoding='utf-8') as f:
-        json.dump(invalid_data, f, ensure_ascii=False, indent=4)
+def save_blacklist(blacklist):
+    """Save invalid games to BLACKLIST_JSON."""
+    try:
+        with open(BLACKLIST_JSON, "w", encoding="utf-8") as f:
+            json.dump({"removed": blacklist}, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"{Fore.RED}Error saving blacklist: {str(e)}")
 
 async def fetch_page(scraper, url, retries=3):
     """Fetch a page with retries in case of temporary failures."""
@@ -170,13 +170,14 @@ async def fetch_game_details(scraper, game_url):
     all_links = []
     for tag in soup.find_all('a', href=True):
         href = tag['href']
-        if "1fichier.com" in href or "pixeldrain.com" in href or "mediafire.com" in href or "datanodes.to" in href:
+        if ("1fichier.com" in href or "gofile.io" in href or "pixeldrain.com" in href or 
+            "mediafire.com" in href or "datanodes.to" in href):
             all_links.append(href)
         elif "qiwi.gg" in href and is_valid_qiwi_link(href):
             all_links.append(href)
 
     # Ordenar os links de acordo com a hierarquia
-    priority_order = ["1fichier", "datanodes", "mediafire", "qiwi", "pixeldrain"]
+    priority_order = ["1fichier", "datanodes", "gofile","mediafire", "qiwi", "pixeldrain"]
     filtered_links = {key: None for key in priority_order}
 
     for link in all_links:
@@ -188,11 +189,19 @@ async def fetch_game_details(scraper, game_url):
             filtered_links["mediafire"] = link
         elif "qiwi.gg" in link:
             filtered_links["qiwi"] = link
+        elif "gofile.io" in link:
+            filtered_links["gofile"] = link
         elif "pixeldrain.com" in link:
             filtered_links["pixeldrain"] = link
 
     # Remover entradas vazias e manter a ordem
     download_links = [filtered_links[key] for key in priority_order if filtered_links[key] is not None]
+
+    blacklist = load_blacklist()  # Load blacklist to ignore games
+
+    if title in blacklist:
+        print(f"{Fore.CYAN}[IGNORED] Game '{title}' is in the blacklist.")
+        return None, None, [], None, None
 
     return title, file_size, download_links, upload_date, game_url
 
@@ -275,7 +284,9 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
             continue
 
         if "FULL UNLOCKED" in title.upper() or "CRACKSTATUS" in title.upper():
-            save_invalid_game(title, "Ignored title pattern")
+            blacklist = load_blacklist()
+            blacklist.append(title)  # Add ignored games to the blacklist
+            save_blacklist(blacklist)
             print(f"Ignoring game with title: {title}")
             continue
 
