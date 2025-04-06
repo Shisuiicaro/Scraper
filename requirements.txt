@@ -1,8 +1,8 @@
-aiohttp>=3.8.0
+httpx>=0.23.0
 beautifulsoup4>=4.9.3
 colorama>=0.4.4
 selenium>=4.0.0
 webdriver-manager>=3.8.0
-requests>=2.26.0
-aiohttp-socks>=0.8.0
-brotli>=1.0.9  # Adicionado para suporte à compressão brotli
+httpx-socks>=0.8.0
+brotli>=1.0.9  # Suporte à compressão brotli
+cloudscraper>=1.2.68
