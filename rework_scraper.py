@@ -91,6 +91,7 @@ async def is_valid_qiwi_link(link, client):
             file_size = size_element.strip().replace("Download ", "")
             return True, file_size
 
+        # Invalidate the link if file size is not found
         return False, None
     except Exception:
         return False, None
@@ -114,9 +115,10 @@ async def is_valid_datanodes_link(link, client):
         # Extrair o tamanho do arquivo
         size_element = soup.find('small', class_='m-0 text-xs text-gray-500 font-bold')
         if size_element:
-            file_size = size_element.get_text(strip=True)  # Corrigido o parêntese
+            file_size = size_element.get_text(strip=True)  # Corrected the strip call
             return True, file_size
 
+        # Invalidate the link if file size is not found
         return False, None
     except Exception:
         return False, None
@@ -150,6 +152,7 @@ async def is_valid_pixeldrain_link(link, client):
             file_size = f"{file_size_bytes / (1024 ** 2):.2f} MB" if file_size_bytes < (1024 ** 3) else f"{file_size_bytes / (1024 ** 3):.2f} GB"
             return True, file_size
 
+        # Invalidate the link if file size is not found
         return False, None
     except Exception:
         return False, None
@@ -180,6 +183,10 @@ def check_mediafire_link(link):
 
         # Verificar se o título da página indica que o arquivo é inválido
         if "File sharing and storage made simple" in driver.title:
+            return None
+
+        # Verificar se a página contém "Dangerous File Blocked"
+        if "Dangerous File Blocked" in driver.page_source:
             return None
 
         return link
@@ -215,6 +222,10 @@ async def validate_mediafire_link(session, link):
 
                     # Verificar se o nome do arquivo contém ".torrent"
                     if ".torrent" in file_name:
+                        return None, ""
+
+                    # Invalidate the link if file size is not found
+                    if not file_size or int(file_size) <= 0:
                         return None, ""
 
                     formatted_size = format_size(int(file_size))
@@ -269,12 +280,24 @@ def fetch_page(scraper, url, retries=3):
 
 async def validate_links(game, total_games, current_index):
     """Valida os links de um jogo e atualiza o tamanho do arquivo."""
+    valid_links_dict, invalid_links_dict, _ = load_progress()  # Load progress once
     valid_links = []
     invalid_links = []
     async with httpx.AsyncClient(follow_redirects=True) as client:
         tasks = []
         link_mapping = {}  # Mapeia índices para links para exibir logs
         for index, link in enumerate(game["uris"]):
+            # Skip links already validated
+            if link in valid_links_dict:
+                print(f"{Fore.GREEN}[SKIPPED] {link} - Already in valid_links.json")
+                valid_links.append(link)
+                continue
+            if link in invalid_links_dict:
+                print(f"{Fore.RED}[SKIPPED] {link} - Already in invalid_links.json")
+                invalid_links.append(link)
+                continue
+
+            # Add validation tasks for new links
             if "qiwi.gg" in link:
                 tasks.append(is_valid_qiwi_link(link, client))
                 link_mapping[len(tasks) - 1] = link
@@ -292,6 +315,8 @@ async def validate_links(game, total_games, current_index):
                 link_mapping[len(tasks) - 1] = link
             elif is_valid_link(link):
                 valid_links.append(link)
+
+        # Process validation tasks
         if tasks:
             results = await asyncio.gather(*tasks)
             for task_index, (is_valid, file_size) in enumerate(results):
@@ -301,17 +326,16 @@ async def validate_links(game, total_games, current_index):
                     game["fileSize"] = file_size
                     valid_links.append(link)
                     # Save valid link immediately
-                    save_progress({**load_progress()[0], game["title"]: valid_links}, 
-                                load_progress()[1], current_index)
+                    save_progress({**valid_links_dict, link: file_size}, invalid_links_dict, current_index)
                 else:
                     print(f"{Fore.RED}[INVALID LINK] {link}")
                     invalid_links.append(link)
                     # Save invalid link immediately
-                    save_progress(load_progress()[0],
-                                {**load_progress()[1], game["title"]: invalid_links}, 
-                                current_index)
+                    save_progress(valid_links_dict, {**invalid_links_dict, link: ""}, current_index)
+
                 # Log progress
                 print(f"{Fore.CYAN}Progress: Validated {task_index + 1}/{len(tasks)} links for game {current_index + 1}/{total_games}")
+
     game["uris"] = valid_links
     if len(valid_links) == 1 and "1fichier.com" in valid_links[0]:
         game["uris"] = []
@@ -330,13 +354,13 @@ def decide_game_to_keep(existing_game, new_game):
     if not existing_links and new_links:
         return new_game
 
-    # Priorizar jogos com versão online
-    existing_is_online = "0xdeadcode" in existing_game["title"].lower() or "multiplayer" in existing_game["title"].lower()
-    new_is_online = "0xdeadcode" in new_game["title"].lower() or "multiplayer" in new_game["title"].lower()
+    # Priorizar jogos com versão multiplayer
+    existing_is_multiplayer = "multiplayer" in existing_game["title"].lower() or "0xdeadcode" in existing_game["title"].lower()
+    new_is_multiplayer = "multiplayer" in new_game["title"].lower() or "0xdeadcode" in new_game["title"].lower()
 
-    if existing_is_online and not new_is_online:
+    if existing_is_multiplayer and not new_is_multiplayer:
         return existing_game
-    if new_is_online and not existing_is_online:
+    if new_is_multiplayer and not existing_is_multiplayer:
         return new_game
 
     # Priorizar jogos mais novos
@@ -391,32 +415,47 @@ async def process_duplicates(games):
     async def process_game_group(group_games):
         nonlocal valid_games, removed_games
         async with tracker.semaphore:
+            # Sort games by upload date (newest first)
             sorted_games = sorted(
                 group_games,
                 key=lambda g: datetime.fromisoformat(g.get("uploadDate", "1970-01-01T00:00:00")),
                 reverse=True
             )
-            
-            # Skip already processed games
-            game_title = normalize_title(sorted_games[0]["title"])
-            if game_title in valid_links_dict:
-                print(f"{Fore.CYAN}Skipping already processed game: {game_title}")
-                if valid_links_dict[game_title]:  # If has valid links
-                    valid_games.append(sorted_games[0])
-                    removed_games.extend(sorted_games[1:])
-                else:
-                    removed_games.extend(sorted_games)
+
+            # Prioritize multiplayer versions
+            multiplayer_games = [g for g in sorted_games if "multiplayer" in g["title"].lower() or "0xdeadcode" in g["title"].lower()]
+            if multiplayer_games:
+                # Validate multiplayer games first
+                for game in multiplayer_games:
+                    validated = await validate_links(game, total_games=len(games), current_index=tracker.current)
+                    tracker.update()
+                    if validated["uris"]:
+                        valid_games.append(validated)
+                        removed_games.extend([g for g in group_games if g != validated])
+                        return
+                # If no valid multiplayer game, remove all
+                removed_games.extend(group_games)
                 return
-                
+
+            # Validate non-multiplayer games
             for game in sorted_games:
                 validated = await validate_links(game, total_games=len(games), current_index=tracker.current)
                 tracker.update()
                 if validated["uris"]:
+                    # Check if the game has only 1fichier links
+                    if len(validated["uris"]) == 1 and "1fichier.com" in validated["uris"][0]:
+                        # Skip if there are other games with valid links besides 1fichier
+                        other_valid_games = [
+                            g for g in sorted_games if g != game and any("1fichier.com" not in link for link in g["uris"])
+                        ]
+                        if other_valid_games:
+                            continue
                     valid_games.append(validated)
                     removed_games.extend([g for g in group_games if g != validated])
-                    break
-            else:
-                removed_games.extend(group_games)
+                    return
+
+            # If no valid game, remove all
+            removed_games.extend(group_games)
 
     # Process groups in batches
     tasks = []

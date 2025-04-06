@@ -23,7 +23,7 @@ BASE_URLS = ["https://repack-games.com/category/latest-updates/"] + [
 JSON_FILENAME = "shisuyssource.json"
 BLACKLIST_JSON = "blacklist.json"  # Use blacklist.json instead of invalid_games.json
 MAX_GAMES = 1000000 
-CONCURRENT_REQUESTS = 6000
+CONCURRENT_REQUESTS = 1000000
 REGEX_TITLE = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -82,15 +82,15 @@ def load_blacklist():
     try:
         with open(BLACKLIST_JSON, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return data.get("removed", [])
+            return {game.get("repackLinkSource") for game in data.get("removed", []) if game.get("repackLinkSource")}
     except (FileNotFoundError, json.JSONDecodeError):
-        return []
+        return set()
 
 def save_blacklist(blacklist):
     """Save invalid games to BLACKLIST_JSON."""
     try:
         with open(BLACKLIST_JSON, "w", encoding="utf-8") as f:
-            json.dump({"removed": blacklist}, f, ensure_ascii=False, indent=4)
+            json.dump({"removed": [{"repackLinkSource": link} for link in blacklist]}, f, ensure_ascii=False, indent=4)
     except Exception as e:
         print(f"{Fore.RED}Error saving blacklist: {str(e)}")
 
@@ -146,6 +146,11 @@ def is_valid_datanodes_link(link):
     return "datanodes.to" in link  # Removida a verificação de '/file/'
 
 async def fetch_game_details(scraper, game_url):
+    blacklist = load_blacklist()  # Load blacklist to skip games
+    if game_url in blacklist:
+        print(f"{Fore.CYAN}[IGNORED] Game '{game_url}' is in the blacklist.")
+        return None, None, [], None, None
+
     page_content = await fetch_page(scraper, game_url)
     if not page_content:
         return None, None, [], None, None
@@ -177,7 +182,7 @@ async def fetch_game_details(scraper, game_url):
             all_links.append(href)
 
     # Ordenar os links de acordo com a hierarquia
-    priority_order = ["1fichier", "datanodes", "gofile","mediafire", "qiwi", "pixeldrain"]
+    priority_order = ["1fichier", "datanodes", "gofile", "mediafire", "qiwi", "pixeldrain"]
     filtered_links = {key: None for key in priority_order}
 
     for link in all_links:
@@ -196,12 +201,6 @@ async def fetch_game_details(scraper, game_url):
 
     # Remover entradas vazias e manter a ordem
     download_links = [filtered_links[key] for key in priority_order if filtered_links[key] is not None]
-
-    blacklist = load_blacklist()  # Load blacklist to ignore games
-
-    if title in blacklist:
-        print(f"{Fore.CYAN}[IGNORED] Game '{title}' is in the blacklist.")
-        return None, None, [], None, None
 
     return title, file_size, download_links, upload_date, game_url
 
@@ -222,6 +221,8 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
     global processed_games_count
     if processed_games_count >= MAX_GAMES:
         raise GameLimitReached()
+
+    blacklist = load_blacklist()  # Load blacklist to skip games
 
     page_content = await fetch_page(scraper, page_url)
     if not page_content:
@@ -246,9 +247,9 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
             a_tag = li.find('a', href=True)
             if a_tag and 'href' in a_tag.attrs:
                 game_url = a_tag['href']
-                # Pular jogos já presentes no JSON
-                if game_url in existing_links:
-                    print(f"{Fore.CYAN}[SKIPPED] Page {page_num}: {game_url} already in JSON")
+                # Skip games already in the blacklist or JSON
+                if game_url in existing_links or game_url in blacklist:
+                    print(f"{Fore.CYAN}[SKIPPED] Page {page_num}: {game_url} already in JSON or blacklist.")
                     continue
                 tasks.append(fetch_game_details(scraper, game_url))
 
@@ -284,8 +285,7 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
             continue
 
         if "FULL UNLOCKED" in title.upper() or "CRACKSTATUS" in title.upper():
-            blacklist = load_blacklist()
-            blacklist.append(title)  # Add ignored games to the blacklist
+            blacklist.add(repack_link_source)  # Add ignored games to the blacklist
             save_blacklist(blacklist)
             print(f"Ignoring game with title: {title}")
             continue
