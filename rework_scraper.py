@@ -62,6 +62,8 @@ def load_json(filename):
 
 def save_json(filename, data):
     """Salva dados em um arquivo JSON."""
+    if "downloads" in data and "name" not in data:
+        data["name"] = "Shisuy's source"  # Ensure the "name" field is present
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
