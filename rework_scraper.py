@@ -28,7 +28,7 @@ from datetime import timedelta
 
 init(autoreset=True)
 
-SOURCE_JSON = "source.json"
+SOURCE_JSON = "shisuyssource.json"
 BLACKLIST_JSON = "blacklist.json"
 SHISUY_SOURCE_JSON = "shisuyssource.json"
 GOFILE_TIMEOUTS_JSON = "gofile_timeouts.json"
