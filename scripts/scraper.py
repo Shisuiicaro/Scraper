@@ -144,7 +144,7 @@ def extract_category_from_url(url):
 def load_existing_links(_):
     """Sempre carrega os links existentes de shisuyssource.json."""
     try:
-        with open("raw_titles.json", "r", encoding="utf-8") as json_file:
+        with open(JSON_FILENAME, "r", encoding="utf-8") as json_file:
             data = json.load(json_file)
             return set(game.get("repackLinkSource") for game in data.get("downloads", []) if game.get("repackLinkSource"))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -191,11 +191,6 @@ async def fetch_game_details(scraper, game_url, category):
     else:
         upload_date = None
 
-    file_size = None
-    size_element = soup.find(string=re.compile(r"(\d+(\.\d+)?\s*(GB|MB))", re.IGNORECASE))
-    if size_element:
-        file_size = size_element.strip()
-
     all_links = []
     for tag in soup.find_all('a', href=True):
         href = tag['href']
@@ -221,7 +216,7 @@ async def fetch_game_details(scraper, game_url, category):
     return {
         "title": title,
         "uris": download_links,
-        "fileSize": file_size or "",
+        "fileSize": "",  # Sempre vazio, nunca tenta extrair da página
         "uploadDate": upload_date,
         "repackLinkSource": game_url,
         "category": category

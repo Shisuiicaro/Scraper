@@ -12,6 +12,11 @@ from webdriver_manager.chrome import ChromeDriverManager
 from queue import Queue
 from typing import List, Tuple
 import os
+from colorama import Fore, Style, init
+from tqdm import tqdm
+import time
+
+init(autoreset=True)
 
 SOURCE_JSON = "./data/source_data/valid_games.json"
 BLACKLIST_JSON = "./data/source_data/blacklist.json"
@@ -60,10 +65,16 @@ async def is_valid_qiwi_link(link, client):
             file_name = title_element.get_text(strip=True)
             if "TRNT.rar" in file_name or ".torrent" in file_name:
                 return False, None
+        # Try to find file size in the normal way
         size_element = soup.find(string=re.compile(r"Download\s+\d+(\.\d+)?\s*(GB|MB)", re.IGNORECASE))
         if size_element:
             file_size = size_element.strip().replace("Download ", "")
             return True, file_size
+        # Fallback: search for any text that looks like a file size (e.g., 1.23 GB, 456 MB)
+        text = soup.get_text(" ", strip=True)
+        match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", text, re.IGNORECASE)
+        if match:
+            return True, match.group(1)
         return False, None
     except Exception:
         return False, None
@@ -83,6 +94,11 @@ async def is_valid_datanodes_link(link, client):
         if size_element:
             file_size = size_element.get_text(strip=True)
             return True, file_size
+        # Fallback: search for any text that looks like a file size (e.g., 1.23 GB, 456 MB)
+        text = soup.get_text(" ", strip=True)
+        match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", text, re.IGNORECASE)
+        if match:
+            return True, match.group(1)
         return False, None
     except Exception:
         return False, None
@@ -104,6 +120,12 @@ async def is_valid_pixeldrain_link(link, client):
         if file_size_bytes > 0:
             file_size = f"{file_size_bytes / (1024 ** 2):.2f} MB" if file_size_bytes < (1024 ** 3) else f"{file_size_bytes / (1024 ** 3):.2f} GB"
             return True, file_size
+        # Fallback: try to find a file size string in the API response (e.g., in description or other fields)
+        for v in file_info.values():
+            if isinstance(v, str):
+                match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", v, re.IGNORECASE)
+                if match:
+                    return True, match.group(1)
         return False, None
     except Exception:
         return False, None
@@ -157,6 +179,12 @@ async def validate_mediafire_link(session, link):
                     if ".torrent" in file_name:
                         return None, ""
                     if not file_size or int(file_size) <= 0:
+                        # Fallback: try to find a file size string in the API response or page
+                        for v in file_info.values():
+                            if isinstance(v, str):
+                                match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", v, re.IGNORECASE)
+                                if match:
+                                    return link, match.group(1)
                         return None, ""
                     formatted_size = format_size(int(file_size))
                     return link, formatted_size
@@ -193,16 +221,16 @@ async def validate_links(game, invalid_links):
     new_invalid_links = set()
     uris = game.get("uris", [])
     if not uris:
-        print(f"[SKIP] Jogo sem 'uris': {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
+        print(f"{Fore.YELLOW}[SKIP] Jogo sem 'uris': {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
         return game, new_invalid_links
     async with httpx.AsyncClient(follow_redirects=True) as client:
         tasks = []
         link_mapping = {}
         for index, link in enumerate(uris):
             if link in invalid_links:
-                print(f"[SKIP LINK] Já inválido: {link}")
+                print(f"{Fore.YELLOW}[SKIP LINK] Já inválido: {link}")
                 continue
-            print(f"[VALIDANDO LINK] {link}")
+            print(f"{Fore.CYAN}[VALIDANDO LINK] {link}")
             if "qiwi.gg" in link:
                 tasks.append(is_valid_qiwi_link(link, client))
                 link_mapping[len(tasks) - 1] = link
@@ -219,17 +247,17 @@ async def validate_links(game, invalid_links):
                 tasks.append(validate_gofile_link_api(link))
                 link_mapping[len(tasks) - 1] = link
             elif is_valid_link(link):
-                print(f"[LINK ACEITO DIRETO] {link}")
+                print(f"{Fore.GREEN}[LINK ACEITO DIRETO] {link}")
                 valid_links.append(link)
         if tasks:
             results = await asyncio.gather(*tasks)
             for task_index, (is_valid, file_size) in enumerate(results):
                 link = link_mapping[task_index]
                 if is_valid:
-                    print(f"[VALID LINK] {link}")
+                    print(f"{Fore.GREEN}[VALID LINK] {link}")
                     valid_links.append(link)
                 else:
-                    print(f"[INVALID LINK] {link}")
+                    print(f"{Fore.RED}[INVALID LINK] {link}")
                     new_invalid_links.add(link)
     game["uris"] = valid_links
     return game, new_invalid_links
@@ -239,29 +267,35 @@ async def process_duplicates(games):
     invalid_links = load_invalid_links()
     grouped_games = {}
 
-    print(f"Total de jogos recebidos: {len(games)}")
+    total_games = len(games)
+    print(f"{Fore.BLUE}Total de jogos recebidos: {total_games}")
     for game in games:
         if is_blacklisted(game, blacklist):
-            print(f"[BLACKLISTED] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
+            print(f"{Fore.YELLOW}[BLACKLISTED] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
             continue
         title = game.get("title", None)
         if not title:
-            print(f"[SEM TITLE] {game.get('repackLinkSource', 'SEM TITULO')}")
+            print(f"{Fore.YELLOW}[SEM TITLE] {game.get('repackLinkSource', 'SEM TITULO')}")
             continue
         normalized_title = normalize_title(title)
         if normalized_title not in grouped_games:
             grouped_games[normalized_title] = []
         grouped_games[normalized_title].append(game)
 
-    print(f"Total de grupos de jogos: {len(grouped_games)}")
+    total_groups = len(grouped_games)
+    print(f"{Fore.BLUE}Total de grupos de jogos: {total_groups}")
 
     valid_games = []
     removed_games = []
     all_new_invalid_links = set()
 
-    async def process_game_group(group_games):
+    group_keys = list(grouped_games.keys())
+    start_time = time.time()
+
+    async def process_game_group(group_games, group_idx):
         nonlocal valid_games, removed_games, all_new_invalid_links
-        print(f"Processando grupo: {group_games[0].get('title', group_games[0].get('repackLinkSource', 'SEM TITULO'))} ({len(group_games)} jogos)")
+        group_title = group_games[0].get('title', group_games[0].get('repackLinkSource', 'SEM TITULO'))
+        print(f"{Fore.MAGENTA}[{group_idx+1}/{total_groups}] Processando grupo: {group_title} ({len(group_games)} jogos)")
         sorted_games = sorted(
             group_games,
             key=lambda g: datetime.fromisoformat(g.get("uploadDate", "1970-01-01T00:00:00")) if g.get("uploadDate") else datetime.min,
@@ -270,23 +304,31 @@ async def process_duplicates(games):
         multiplayer_games = [g for g in sorted_games if "multiplayer" in g.get("title", "").lower() or "0xdeadcode" in g.get("title", "").lower()]
         candidates = multiplayer_games if multiplayer_games else sorted_games
         for game in candidates:
-            print(f"Validando jogo: {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
+            print(f"{Fore.CYAN}Validando jogo: {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
             validated, new_invalid_links = await validate_links(game, invalid_links)
             all_new_invalid_links.update(new_invalid_links)
             uris = validated.get("uris", [])
             if not uris or (len(uris) == 1 and "1fichier.com" in uris[0]):
-                print(f"[REMOVIDO] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
+                print(f"{Fore.RED}[REMOVIDO] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
                 removed_games.append(validated)
                 continue
-            print(f"[VALIDADO] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
+            print(f"{Fore.GREEN}[VALIDADO] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
             valid_games.append(validated)
             removed_games.extend([g for g in group_games if g != validated])
             return
-        print(f"[REMOVIDO GRUPO INTEIRO] {group_games[0].get('title', group_games[0].get('repackLinkSource', 'SEM TITULO'))}")
+        print(f"{Fore.RED}[REMOVIDO GRUPO INTEIRO] {group_title}")
         removed_games.extend(group_games)
 
-    for group in grouped_games.values():
-        await process_game_group(group)
+    # Progress bar for groups
+    with tqdm(total=total_groups, desc="Grupos de jogos validados", ncols=100) as pbar:
+        for idx, group_key in enumerate(group_keys):
+            await process_game_group(grouped_games[group_key], idx)
+            elapsed = time.time() - start_time
+            avg_time = elapsed / (idx + 1)
+            eta = avg_time * (total_groups - (idx + 1))
+            pbar.set_postfix({"ETA": f"{int(eta//60)}m{int(eta%60)}s"})
+            pbar.update(1)
+
     invalid_links.update(all_new_invalid_links)
     save_invalid_links(invalid_links)
     return valid_games, removed_games
