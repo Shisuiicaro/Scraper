@@ -418,19 +418,44 @@ class DriverPool:
         chrome_options.add_argument('--remote-debugging-port=9222')
         chrome_options.add_argument('--disable-extensions')
         chrome_options.page_load_strategy = 'eager'
+        # Explicitly set Chromium binary path for Linux
+        chrome_options.binary_location = "/usr/bin/chromium-browser"
         
         try:
-            # First attempt with default Chrome settings
+            import subprocess
+            import re
             from webdriver_manager.chrome import ChromeDriverManager
-            from webdriver_manager.core.os_manager import ChromeType
+
+            def get_chromium_major_version():
+                try:
+                    output = subprocess.check_output(["/usr/bin/chromium-browser", "--version"]).decode()
+                    version = re.search(r"(\d+)\.", output)
+                    return version.group(1) if version else None
+                except Exception:
+                    return None
+
+            chromium_major_version = get_chromium_major_version()
+            if chromium_major_version:
+                service = Service(ChromeDriverManager(driver_version=chromium_major_version).install())
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+                driver.set_page_load_timeout(30)
+                return driver
+
+            # Fallback: try the latest ChromeDriver
             service = Service(ChromeDriverManager().install())
-            return webdriver.Chrome(service=service, options=chrome_options)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver.set_page_load_timeout(30)
+            return driver
+
         except Exception as e:
             logger.error(f"Failed to create Chrome driver: {str(e)}")
             try:
-                # Fallback: Try with Chromium settings
+                # Final fallback: Try with Chromium type
+                from webdriver_manager.core.os_manager import ChromeType
                 service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
-                return webdriver.Chrome(service=service, options=chrome_options)
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+                driver.set_page_load_timeout(30)
+                return driver
             except Exception as e:
                 logger.error(f"Failed to create Chromium driver: {str(e)}")
                 raise
