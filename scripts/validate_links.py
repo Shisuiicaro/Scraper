@@ -242,17 +242,18 @@ async def validate_links(game, invalid_links):
         print(f"{Fore.YELLOW}{log_msg}")
         logger.info(log_msg)
         return game, new_invalid_links
-        
+    
     async with httpx.AsyncClient(follow_redirects=True) as client:
         tasks = []
         link_mapping = {}
+        
         for index, link in enumerate(uris):
             if link in invalid_links:
                 log_msg = f"[SKIP LINK] Already invalid: {link}"
                 print(f"{Fore.YELLOW}{log_msg}")
                 logger.info(log_msg)
                 continue
-                
+
             log_msg = f"[VALIDATING LINK] {link}"
             print(f"{Fore.CYAN}{log_msg}")
             logger.info(log_msg)
@@ -271,12 +272,13 @@ async def validate_links(game, invalid_links):
                 link_mapping[len(tasks) - 1] = link
             elif "gofile.io" in link:
                 tasks.append(validate_gofile_link_api(link))
-                link_mapping[len(tasks) - 1] = link            elif is_valid_link(link):
+                link_mapping[len(tasks) - 1] = link
+            elif is_valid_link(link):
                 log_msg = f"[DIRECT ACCEPT LINK] {link}"
                 print(f"{Fore.GREEN}{log_msg}")
                 logger.info(log_msg)
                 valid_links.append(link)
-                
+        
         if tasks:
             results = await asyncio.gather(*tasks)
             for task_index, (is_valid, file_size) in enumerate(results):
@@ -291,6 +293,7 @@ async def validate_links(game, invalid_links):
                     print(f"{Fore.RED}{log_msg}")
                     logger.info(log_msg)
                     new_invalid_links.add(link)
+    
     game["uris"] = valid_links
     return game, new_invalid_links
 
@@ -322,7 +325,9 @@ async def process_duplicates(games):
     all_new_invalid_links = set()
 
     group_keys = list(grouped_games.keys())
-    start_time = time.time()    async def process_game_group(group_games, group_idx):
+    start_time = time.time()
+    
+    async def process_game_group(group_games, group_idx):
         nonlocal valid_games, removed_games, all_new_invalid_links
         group_title = group_games[0].get('title', group_games[0].get('repackLinkSource', 'SEM TITULO'))
         log_msg = f"[{group_idx+1}/{total_groups}] Processing group: {group_title} ({len(group_games)} games)"
