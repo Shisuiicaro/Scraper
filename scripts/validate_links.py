@@ -262,6 +262,8 @@ def load_invalid_links():
     return set()
 
 def save_invalid_links(invalid_links):
+    # Ensure the directory exists
+    os.makedirs(os.path.dirname(INVALID_LINKS_JSON), exist_ok=True)
     with open(INVALID_LINKS_JSON, "w", encoding="utf-8") as f:
         json.dump(list(invalid_links), f, ensure_ascii=False, indent=4)
 
