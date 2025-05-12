@@ -418,7 +418,6 @@ class DriverPool:
         chrome_options.add_argument('--remote-debugging-port=9222')
         chrome_options.add_argument('--disable-extensions')
         chrome_options.page_load_strategy = 'eager'
-        # Explicitly set Chromium binary path for Linux
         chrome_options.binary_location = "/usr/bin/chromium-browser"
         
         try:
@@ -426,17 +425,18 @@ class DriverPool:
             import re
             from webdriver_manager.chrome import ChromeDriverManager
 
-            def get_chromium_major_version():
+            def get_chromium_full_version():
                 try:
                     output = subprocess.check_output(["/usr/bin/chromium-browser", "--version"]).decode()
-                    version = re.search(r"(\d+)\.", output)
+                    # Example: "Chromium 136.0.7103.92 snap"
+                    version = re.search(r"(\d+\.\d+\.\d+\.\d+)", output)
                     return version.group(1) if version else None
                 except Exception:
                     return None
 
-            chromium_major_version = get_chromium_major_version()
-            if chromium_major_version:
-                service = Service(ChromeDriverManager(driver_version=chromium_major_version).install())
+            chromium_full_version = get_chromium_full_version()
+            if chromium_full_version:
+                service = Service(ChromeDriverManager(driver_version=chromium_full_version).install())
                 driver = webdriver.Chrome(service=service, options=chrome_options)
                 driver.set_page_load_timeout(30)
                 return driver
