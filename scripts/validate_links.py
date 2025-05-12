@@ -9,7 +9,6 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
-from queue import Queue
 from typing import List, Tuple
 import os
 from colorama import Fore, Style, init
@@ -82,12 +81,10 @@ async def is_valid_qiwi_link(link, client):
             file_name = title_element.get_text(strip=True)
             if "TRNT.rar" in file_name or ".torrent" in file_name:
                 return False, None
-        # Try to find file size in the normal way
         size_element = soup.find(string=re.compile(r"Download\s+\d+(\.\d+)?\s*(GB|MB)", re.IGNORECASE))
         if size_element:
             file_size = size_element.strip().replace("Download ", "")
             return True, file_size
-        # Fallback: search for any text that looks like a file size (e.g., 1.23 GB, 456 MB)
         text = soup.get_text(" ", strip=True)
         match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", text, re.IGNORECASE)
         if match:
@@ -111,7 +108,6 @@ async def is_valid_datanodes_link(link, client):
         if size_element:
             file_size = size_element.get_text(strip=True)
             return True, file_size
-        # Fallback: search for any text that looks like a file size (e.g., 1.23 GB, 456 MB)
         text = soup.get_text(" ", strip=True)
         match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", text, re.IGNORECASE)
         if match:
@@ -137,7 +133,6 @@ async def is_valid_pixeldrain_link(link, client):
         if file_size_bytes > 0:
             file_size = f"{file_size_bytes / (1024 ** 2):.2f} MB" if file_size_bytes < (1024 ** 3) else f"{file_size_bytes / (1024 ** 3):.2f} GB"
             return True, file_size
-        # Fallback: try to find a file size string in the API response (e.g., in description or other fields)
         for v in file_info.values():
             if isinstance(v, str):
                 match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", v, re.IGNORECASE)
@@ -157,8 +152,48 @@ def extract_mediafire_key(url):
         pass
     return None
 
-def check_mediafire_link(link):
-    driver = driver_pool.get_driver()
+def create_chromium_driver():
+    chrome_options = Options()
+    chrome_options.add_argument('--headless')
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument('--remote-debugging-port=9222')
+    chrome_options.add_argument('--disable-extensions')
+    chrome_options.page_load_strategy = 'eager'
+    chrome_options.binary_location = "/usr/bin/chromium-browser"
+    try:
+        import subprocess
+        import re
+        from webdriver_manager.chrome import ChromeDriverManager
+
+        def get_chromium_full_version():
+            try:
+                output = subprocess.check_output(["/usr/bin/chromium-browser", "--version"]).decode()
+                version = re.search(r"(\d+\.\d+\.\d+\.\d+)", output)
+                return version.group(1) if version else None
+            except Exception:
+                return None
+
+        chromium_full_version = get_chromium_full_version()
+        if chromium_full_version:
+            service = Service(ChromeDriverManager(driver_version=chromium_full_version).install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver.set_page_load_timeout(30)
+            return driver
+
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.set_page_load_timeout(30)
+        return driver
+
+    except Exception as e:
+        logger.error(f"Failed to create Chrome driver: {str(e)}")
+        print(f"FATAL: Could not start ChromeDriver: {e}", flush=True)
+        import sys
+        sys.exit(1)
+
+def check_mediafire_link(link, driver):
     try:
         driver.set_page_load_timeout(10)
         driver.get(link)
@@ -171,13 +206,11 @@ def check_mediafire_link(link):
         return link
     except Exception:
         return None
-    finally:
-        driver_pool.return_driver(driver)
 
-async def validate_mediafire_link(session, link):
+async def validate_mediafire_link(session, link, driver):
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        result = await loop.run_in_executor(executor, check_mediafire_link, link)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        result = await loop.run_in_executor(executor, check_mediafire_link, link, driver)
         if not result:
             return None, ""
     quick_key = extract_mediafire_key(link)
@@ -196,7 +229,6 @@ async def validate_mediafire_link(session, link):
                     if ".torrent" in file_name:
                         return None, ""
                     if not file_size or int(file_size) <= 0:
-                        # Fallback: try to find a file size string in the API response or page
                         for v in file_info.values():
                             if isinstance(v, str):
                                 match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", v, re.IGNORECASE)
@@ -233,22 +265,22 @@ def save_invalid_links(invalid_links):
     with open(INVALID_LINKS_JSON, "w", encoding="utf-8") as f:
         json.dump(list(invalid_links), f, ensure_ascii=False, indent=4)
 
-async def validate_links(game, invalid_links):
+async def validate_links(game, invalid_links, driver):
     valid_links = []
     new_invalid_links = set()
     uris = game.get("uris", [])
     game_title = game.get('title', game.get('repackLinkSource', 'SEM TITULO'))
-    
+
     if not uris:
         log_msg = f"[SKIP] Game without 'uris': {game_title}"
         print(f"{Fore.YELLOW}{log_msg}", flush=True)
         logger.info(log_msg)
         return game, new_invalid_links
-    
+
     async with httpx.AsyncClient(follow_redirects=True) as client:
         tasks = []
         link_mapping = {}
-        
+
         for index, link in enumerate(uris):
             if link in invalid_links:
                 log_msg = f"[SKIP LINK] Already invalid: {link}"
@@ -259,7 +291,7 @@ async def validate_links(game, invalid_links):
             log_msg = f"[VALIDATING LINK] {link}"
             print(f"{Fore.CYAN}{log_msg}", flush=True)
             logger.info(log_msg)
-            
+
             if "qiwi.gg" in link:
                 tasks.append(is_valid_qiwi_link(link, client))
                 link_mapping[len(tasks) - 1] = link
@@ -270,7 +302,7 @@ async def validate_links(game, invalid_links):
                 tasks.append(is_valid_pixeldrain_link(link, client))
                 link_mapping[len(tasks) - 1] = link
             elif "mediafire.com" in link:
-                tasks.append(validate_mediafire_link(client, link))
+                tasks.append(validate_mediafire_link(client, link, driver))
                 link_mapping[len(tasks) - 1] = link
             elif "gofile.io" in link:
                 tasks.append(validate_gofile_link_api(link))
@@ -280,7 +312,7 @@ async def validate_links(game, invalid_links):
                 print(f"{Fore.GREEN}{log_msg}", flush=True)
                 logger.info(log_msg)
                 valid_links.append(link)
-        
+
         if tasks:
             results = await asyncio.gather(*tasks)
             for task_index, (is_valid, file_size) in enumerate(results):
@@ -295,11 +327,11 @@ async def validate_links(game, invalid_links):
                     print(f"{Fore.RED}{log_msg}", flush=True)
                     logger.info(log_msg)
                     new_invalid_links.add(link)
-    
+
     game["uris"] = valid_links
     return game, new_invalid_links
 
-async def process_duplicates(games):
+async def process_duplicates(games, driver):
     blacklist = load_blacklist()
     invalid_links = load_invalid_links()
     grouped_games = {}
@@ -350,7 +382,7 @@ async def process_duplicates(games):
             print(f"{Fore.CYAN}{log_msg}", flush=True)
             logger.info(log_msg)
             
-            validated, new_invalid_links = await validate_links(game, invalid_links)
+            validated, new_invalid_links = await validate_links(game, invalid_links, driver)
             all_new_invalid_links.update(new_invalid_links)
             uris = validated.get("uris", [])
             
@@ -373,7 +405,6 @@ async def process_duplicates(games):
         logger.info(log_msg)
         removed_games.extend(group_games)
 
-    # Progress bar for groups
     with tqdm(total=total_groups, desc="Grupos de jogos validados", ncols=100) as pbar:
         for idx, group_key in enumerate(group_keys):
             await process_game_group(grouped_games[group_key], idx)
@@ -403,81 +434,6 @@ def is_blacklisted(game, blacklist):
         if repack and repack == removed.get("repackLinkSource"):
             return True
     return False
-
-class DriverPool:
-    def __init__(self, size=3):
-        self.pool = Queue(maxsize=size)
-        for _ in range(size):
-            driver = self._create_driver()
-            self.pool.put(driver)
-
-    def _create_driver(self):
-        chrome_options = Options()
-        chrome_options.add_argument('--headless')
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--disable-gpu')
-        chrome_options.add_argument('--remote-debugging-port=9222')
-        chrome_options.add_argument('--disable-extensions')
-        chrome_options.page_load_strategy = 'eager'
-        chrome_options.binary_location = "/usr/bin/chromium-browser"
-        
-        try:
-            import subprocess
-            import re
-            from webdriver_manager.chrome import ChromeDriverManager
-
-            def get_chromium_full_version():
-                try:
-                    output = subprocess.check_output(["/usr/bin/chromium-browser", "--version"]).decode()
-                    version = re.search(r"(\d+\.\d+\.\d+\.\d+)", output)
-                    return version.group(1) if version else None
-                except Exception:
-                    return None
-
-            chromium_full_version = get_chromium_full_version()
-            if chromium_full_version:
-                service = Service(ChromeDriverManager(driver_version=chromium_full_version).install())
-                driver = webdriver.Chrome(service=service, options=chrome_options)
-                driver.set_page_load_timeout(30)
-                return driver
-
-            # Fallback: try the latest ChromeDriver
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            driver.set_page_load_timeout(30)
-            return driver
-
-        except Exception as e:
-            logger.error(f"Failed to create Chrome driver: {str(e)}")
-            print(f"FATAL: Could not start ChromeDriver: {e}", flush=True)
-            import sys
-            sys.exit(1)
-        try:
-            # Final fallback: Try with Chromium type
-            from webdriver_manager.core.os_manager import ChromeType
-            service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            driver.set_page_load_timeout(30)
-            return driver
-        except Exception as e:
-            logger.error(f"Failed to create Chromium driver: {str(e)}")
-            print(f"FATAL: Could not start Chromium driver: {e}", flush=True)
-            import sys
-            sys.exit(1)
-
-    def get_driver(self):
-        return self.pool.get()
-
-    def return_driver(self, driver):
-        self.pool.put(driver)
-
-    def cleanup(self):
-        while not self.pool.empty():
-            driver = self.pool.get()
-            driver.quit()
-
-driver_pool = DriverPool(size=3)
 
 WT = "4fd6sg89d7s6"
 GOFILE_TOKEN = None
@@ -559,7 +515,11 @@ async def main():
     else:
         games = []
 
-    valid_games, removed_games = await process_duplicates(games)
+    driver = create_chromium_driver()
+    try:
+        valid_games, removed_games = await process_duplicates(games, driver)
+    finally:
+        driver.quit()
 
     blacklist = load_blacklist()
     blacklist.extend([g for g in removed_games if not is_blacklisted(g, blacklist)])
