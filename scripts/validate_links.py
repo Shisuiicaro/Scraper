@@ -437,13 +437,13 @@ class DriverPool:
 
             chromium_full_version = get_chromium_full_version()
             if chromium_full_version:
-                service = Service(ChromeDriverManager(driver_version=chromium_full_version, cache_valid_range=365).install())
+                service = Service(ChromeDriverManager(driver_version=chromium_full_version).install())
                 driver = webdriver.Chrome(service=service, options=chrome_options)
                 driver.set_page_load_timeout(30)
                 return driver
 
             # Fallback: try the latest ChromeDriver
-            service = Service(ChromeDriverManager(cache_valid_range=365).install())
+            service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=chrome_options)
             driver.set_page_load_timeout(30)
             return driver
