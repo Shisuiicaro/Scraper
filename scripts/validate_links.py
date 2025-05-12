@@ -15,6 +15,21 @@ import os
 from colorama import Fore, Style, init
 from tqdm import tqdm
 import time
+import logging
+
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[
+            logging.FileHandler('validator.log', encoding='utf-8', mode='a'),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger('validator')
+
+logger = setup_logging()
 
 init(autoreset=True)
 
@@ -220,17 +235,28 @@ async def validate_links(game, invalid_links):
     valid_links = []
     new_invalid_links = set()
     uris = game.get("uris", [])
+    game_title = game.get('title', game.get('repackLinkSource', 'SEM TITULO'))
+    
     if not uris:
-        print(f"{Fore.YELLOW}[SKIP] Jogo sem 'uris': {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
+        log_msg = f"[SKIP] Game without 'uris': {game_title}"
+        print(f"{Fore.YELLOW}{log_msg}")
+        logger.info(log_msg)
         return game, new_invalid_links
+        
     async with httpx.AsyncClient(follow_redirects=True) as client:
         tasks = []
         link_mapping = {}
         for index, link in enumerate(uris):
             if link in invalid_links:
-                print(f"{Fore.YELLOW}[SKIP LINK] Já inválido: {link}")
+                log_msg = f"[SKIP LINK] Already invalid: {link}"
+                print(f"{Fore.YELLOW}{log_msg}")
+                logger.info(log_msg)
                 continue
-            print(f"{Fore.CYAN}[VALIDANDO LINK] {link}")
+                
+            log_msg = f"[VALIDATING LINK] {link}"
+            print(f"{Fore.CYAN}{log_msg}")
+            logger.info(log_msg)
+            
             if "qiwi.gg" in link:
                 tasks.append(is_valid_qiwi_link(link, client))
                 link_mapping[len(tasks) - 1] = link
@@ -245,19 +271,25 @@ async def validate_links(game, invalid_links):
                 link_mapping[len(tasks) - 1] = link
             elif "gofile.io" in link:
                 tasks.append(validate_gofile_link_api(link))
-                link_mapping[len(tasks) - 1] = link
-            elif is_valid_link(link):
-                print(f"{Fore.GREEN}[LINK ACEITO DIRETO] {link}")
+                link_mapping[len(tasks) - 1] = link            elif is_valid_link(link):
+                log_msg = f"[DIRECT ACCEPT LINK] {link}"
+                print(f"{Fore.GREEN}{log_msg}")
+                logger.info(log_msg)
                 valid_links.append(link)
+                
         if tasks:
             results = await asyncio.gather(*tasks)
             for task_index, (is_valid, file_size) in enumerate(results):
                 link = link_mapping[task_index]
                 if is_valid:
-                    print(f"{Fore.GREEN}[VALID LINK] {link}")
+                    log_msg = f"[VALID LINK] {link}"
+                    print(f"{Fore.GREEN}{log_msg}")
+                    logger.info(log_msg)
                     valid_links.append(link)
                 else:
-                    print(f"{Fore.RED}[INVALID LINK] {link}")
+                    log_msg = f"[INVALID LINK] {link}"
+                    print(f"{Fore.RED}{log_msg}")
+                    logger.info(log_msg)
                     new_invalid_links.add(link)
     game["uris"] = valid_links
     return game, new_invalid_links
@@ -290,12 +322,13 @@ async def process_duplicates(games):
     all_new_invalid_links = set()
 
     group_keys = list(grouped_games.keys())
-    start_time = time.time()
-
-    async def process_game_group(group_games, group_idx):
+    start_time = time.time()    async def process_game_group(group_games, group_idx):
         nonlocal valid_games, removed_games, all_new_invalid_links
         group_title = group_games[0].get('title', group_games[0].get('repackLinkSource', 'SEM TITULO'))
-        print(f"{Fore.MAGENTA}[{group_idx+1}/{total_groups}] Processando grupo: {group_title} ({len(group_games)} jogos)")
+        log_msg = f"[{group_idx+1}/{total_groups}] Processing group: {group_title} ({len(group_games)} games)"
+        print(f"{Fore.MAGENTA}{log_msg}")
+        logger.info(log_msg)
+        
         sorted_games = sorted(
             group_games,
             key=lambda g: datetime.fromisoformat(g.get("uploadDate", "1970-01-01T00:00:00")) if g.get("uploadDate") else datetime.min,
@@ -303,20 +336,34 @@ async def process_duplicates(games):
         )
         multiplayer_games = [g for g in sorted_games if "multiplayer" in g.get("title", "").lower() or "0xdeadcode" in g.get("title", "").lower()]
         candidates = multiplayer_games if multiplayer_games else sorted_games
+        
         for game in candidates:
-            print(f"{Fore.CYAN}Validando jogo: {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
+            game_title = game.get('title', game.get('repackLinkSource', 'SEM TITULO'))
+            log_msg = f"Validating game: {game_title}"
+            print(f"{Fore.CYAN}{log_msg}")
+            logger.info(log_msg)
+            
             validated, new_invalid_links = await validate_links(game, invalid_links)
             all_new_invalid_links.update(new_invalid_links)
             uris = validated.get("uris", [])
+            
             if not uris or (len(uris) == 1 and "1fichier.com" in uris[0]):
-                print(f"{Fore.RED}[REMOVIDO] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
+                log_msg = f"[REMOVED] {game_title}"
+                print(f"{Fore.RED}{log_msg}")
+                logger.info(log_msg)
                 removed_games.append(validated)
                 continue
-            print(f"{Fore.GREEN}[VALIDADO] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
+                
+            log_msg = f"[VALIDATED] {game_title}"
+            print(f"{Fore.GREEN}{log_msg}")
+            logger.info(log_msg)
             valid_games.append(validated)
             removed_games.extend([g for g in group_games if g != validated])
             return
-        print(f"{Fore.RED}[REMOVIDO GRUPO INTEIRO] {group_title}")
+            
+        log_msg = f"[REMOVED ENTIRE GROUP] {group_title}"
+        print(f"{Fore.RED}{log_msg}")
+        logger.info(log_msg)
         removed_games.extend(group_games)
 
     # Progress bar for groups
