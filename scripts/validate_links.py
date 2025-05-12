@@ -418,8 +418,19 @@ class DriverPool:
         chrome_options.add_argument('--remote-debugging-port=9222')
         chrome_options.add_argument('--disable-extensions')
         chrome_options.page_load_strategy = 'eager'
-        service = Service(ChromeDriverManager().install())
-        return webdriver.Chrome(service=service, options=chrome_options)
+        
+        # Use latest stable ChromeDriver that matches the installed Chrome/Chromium version
+        service = Service(ChromeDriverManager(log_level=20).install())
+        
+        try:
+            return webdriver.Chrome(service=service, options=chrome_options)
+        except Exception as e:
+            logger.error(f"Failed to create Chrome driver: {str(e)}")
+            # Fallback: Try installing ChromeDriver with version selection
+            from selenium.webdriver.chrome.service import Service as ChromeService
+            from webdriver_manager.core.os_manager import ChromeType
+            service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+            return webdriver.Chrome(service=service, options=chrome_options)
 
     def get_driver(self):
         return self.pool.get()
