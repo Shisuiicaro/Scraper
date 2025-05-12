@@ -408,22 +408,25 @@ class DriverPool:
         for _ in range(size):
             driver = self._create_driver()
             self.pool.put(driver)
-def _create_driver(self):
-    chrome_options = Options()
-    chrome_options.add_argument('--headless')
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
-    # Add these new options
-    chrome_options.add_argument('--disable-gpu')
-    chrome_options.add_argument('--remote-debugging-port=9222')
-    chrome_options.add_argument('--disable-extensions')
-    chrome_options.page_load_strategy = 'eager'
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=chrome_options)
+
+    def _create_driver(self):
+        chrome_options = Options()
+        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--remote-debugging-port=9222')
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.page_load_strategy = 'eager'
+        service = Service(ChromeDriverManager().install())
+        return webdriver.Chrome(service=service, options=chrome_options)
+
     def get_driver(self):
         return self.pool.get()
+
     def return_driver(self, driver):
         self.pool.put(driver)
+
     def cleanup(self):
         while not self.pool.empty():
             driver = self.pool.get()
