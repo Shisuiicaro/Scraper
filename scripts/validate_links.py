@@ -419,18 +419,21 @@ class DriverPool:
         chrome_options.add_argument('--disable-extensions')
         chrome_options.page_load_strategy = 'eager'
         
-        # Use latest stable ChromeDriver that matches the installed Chrome/Chromium version
-        service = Service(ChromeDriverManager(log_level=20).install())
-        
         try:
+            # First attempt with default Chrome settings
+            from webdriver_manager.chrome import ChromeDriverManager
+            from webdriver_manager.core.os_manager import ChromeType
+            service = Service(ChromeDriverManager().install())
             return webdriver.Chrome(service=service, options=chrome_options)
         except Exception as e:
             logger.error(f"Failed to create Chrome driver: {str(e)}")
-            # Fallback: Try installing ChromeDriver with version selection
-            from selenium.webdriver.chrome.service import Service as ChromeService
-            from webdriver_manager.core.os_manager import ChromeType
-            service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
-            return webdriver.Chrome(service=service, options=chrome_options)
+            try:
+                # Fallback: Try with Chromium settings
+                service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+                return webdriver.Chrome(service=service, options=chrome_options)
+            except Exception as e:
+                logger.error(f"Failed to create Chromium driver: {str(e)}")
+                raise
 
     def get_driver(self):
         return self.pool.get()
