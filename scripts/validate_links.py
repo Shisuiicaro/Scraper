@@ -18,14 +18,16 @@ import time
 import logging
 
 def setup_logging():
+    import sys
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
         handlers=[
             logging.FileHandler('validator.log', encoding='utf-8', mode='a'),
-            logging.StreamHandler()
-        ]
+            logging.StreamHandler(sys.stdout)
+        ],
+        force=True
     )
     return logging.getLogger('validator')
 
@@ -239,7 +241,7 @@ async def validate_links(game, invalid_links):
     
     if not uris:
         log_msg = f"[SKIP] Game without 'uris': {game_title}"
-        print(f"{Fore.YELLOW}{log_msg}")
+        print(f"{Fore.YELLOW}{log_msg}", flush=True)
         logger.info(log_msg)
         return game, new_invalid_links
     
@@ -250,12 +252,12 @@ async def validate_links(game, invalid_links):
         for index, link in enumerate(uris):
             if link in invalid_links:
                 log_msg = f"[SKIP LINK] Already invalid: {link}"
-                print(f"{Fore.YELLOW}{log_msg}")
+                print(f"{Fore.YELLOW}{log_msg}", flush=True)
                 logger.info(log_msg)
                 continue
 
             log_msg = f"[VALIDATING LINK] {link}"
-            print(f"{Fore.CYAN}{log_msg}")
+            print(f"{Fore.CYAN}{log_msg}", flush=True)
             logger.info(log_msg)
             
             if "qiwi.gg" in link:
@@ -275,7 +277,7 @@ async def validate_links(game, invalid_links):
                 link_mapping[len(tasks) - 1] = link
             elif is_valid_link(link):
                 log_msg = f"[DIRECT ACCEPT LINK] {link}"
-                print(f"{Fore.GREEN}{log_msg}")
+                print(f"{Fore.GREEN}{log_msg}", flush=True)
                 logger.info(log_msg)
                 valid_links.append(link)
         
@@ -285,12 +287,12 @@ async def validate_links(game, invalid_links):
                 link = link_mapping[task_index]
                 if is_valid:
                     log_msg = f"[VALID LINK] {link}"
-                    print(f"{Fore.GREEN}{log_msg}")
+                    print(f"{Fore.GREEN}{log_msg}", flush=True)
                     logger.info(log_msg)
                     valid_links.append(link)
                 else:
                     log_msg = f"[INVALID LINK] {link}"
-                    print(f"{Fore.RED}{log_msg}")
+                    print(f"{Fore.RED}{log_msg}", flush=True)
                     logger.info(log_msg)
                     new_invalid_links.add(link)
     
@@ -303,14 +305,14 @@ async def process_duplicates(games):
     grouped_games = {}
 
     total_games = len(games)
-    print(f"{Fore.BLUE}Total de jogos recebidos: {total_games}")
+    print(f"{Fore.BLUE}Total de jogos recebidos: {total_games}", flush=True)
     for game in games:
         if is_blacklisted(game, blacklist):
-            print(f"{Fore.YELLOW}[BLACKLISTED] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}")
+            print(f"{Fore.YELLOW}[BLACKLISTED] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}", flush=True)
             continue
         title = game.get("title", None)
         if not title:
-            print(f"{Fore.YELLOW}[SEM TITLE] {game.get('repackLinkSource', 'SEM TITULO')}")
+            print(f"{Fore.YELLOW}[SEM TITLE] {game.get('repackLinkSource', 'SEM TITULO')}", flush=True)
             continue
         normalized_title = normalize_title(title)
         if normalized_title not in grouped_games:
@@ -318,7 +320,7 @@ async def process_duplicates(games):
         grouped_games[normalized_title].append(game)
 
     total_groups = len(grouped_games)
-    print(f"{Fore.BLUE}Total de grupos de jogos: {total_groups}")
+    print(f"{Fore.BLUE}Total de grupos de jogos: {total_groups}", flush=True)
 
     valid_games = []
     removed_games = []
@@ -331,7 +333,7 @@ async def process_duplicates(games):
         nonlocal valid_games, removed_games, all_new_invalid_links
         group_title = group_games[0].get('title', group_games[0].get('repackLinkSource', 'SEM TITULO'))
         log_msg = f"[{group_idx+1}/{total_groups}] Processing group: {group_title} ({len(group_games)} games)"
-        print(f"{Fore.MAGENTA}{log_msg}")
+        print(f"{Fore.MAGENTA}{log_msg}", flush=True)
         logger.info(log_msg)
         
         sorted_games = sorted(
@@ -345,7 +347,7 @@ async def process_duplicates(games):
         for game in candidates:
             game_title = game.get('title', game.get('repackLinkSource', 'SEM TITULO'))
             log_msg = f"Validating game: {game_title}"
-            print(f"{Fore.CYAN}{log_msg}")
+            print(f"{Fore.CYAN}{log_msg}", flush=True)
             logger.info(log_msg)
             
             validated, new_invalid_links = await validate_links(game, invalid_links)
@@ -354,20 +356,20 @@ async def process_duplicates(games):
             
             if not uris or (len(uris) == 1 and "1fichier.com" in uris[0]):
                 log_msg = f"[REMOVED] {game_title}"
-                print(f"{Fore.RED}{log_msg}")
+                print(f"{Fore.RED}{log_msg}", flush=True)
                 logger.info(log_msg)
                 removed_games.append(validated)
                 continue
                 
             log_msg = f"[VALIDATED] {game_title}"
-            print(f"{Fore.GREEN}{log_msg}")
+            print(f"{Fore.GREEN}{log_msg}", flush=True)
             logger.info(log_msg)
             valid_games.append(validated)
             removed_games.extend([g for g in group_games if g != validated])
             return
             
         log_msg = f"[REMOVED ENTIRE GROUP] {group_title}"
-        print(f"{Fore.RED}{log_msg}")
+        print(f"{Fore.RED}{log_msg}", flush=True)
         logger.info(log_msg)
         removed_games.extend(group_games)
 
@@ -428,7 +430,6 @@ class DriverPool:
             def get_chromium_full_version():
                 try:
                     output = subprocess.check_output(["/usr/bin/chromium-browser", "--version"]).decode()
-                    # Example: "Chromium 136.0.7103.92 snap"
                     version = re.search(r"(\d+\.\d+\.\d+\.\d+)", output)
                     return version.group(1) if version else None
                 except Exception:
@@ -436,29 +437,34 @@ class DriverPool:
 
             chromium_full_version = get_chromium_full_version()
             if chromium_full_version:
-                service = Service(ChromeDriverManager(driver_version=chromium_full_version).install())
+                service = Service(ChromeDriverManager(driver_version=chromium_full_version, cache_valid_range=365).install())
                 driver = webdriver.Chrome(service=service, options=chrome_options)
                 driver.set_page_load_timeout(30)
                 return driver
 
             # Fallback: try the latest ChromeDriver
-            service = Service(ChromeDriverManager().install())
+            service = Service(ChromeDriverManager(cache_valid_range=365).install())
             driver = webdriver.Chrome(service=service, options=chrome_options)
             driver.set_page_load_timeout(30)
             return driver
 
         except Exception as e:
             logger.error(f"Failed to create Chrome driver: {str(e)}")
-            try:
-                # Final fallback: Try with Chromium type
-                from webdriver_manager.core.os_manager import ChromeType
-                service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
-                driver = webdriver.Chrome(service=service, options=chrome_options)
-                driver.set_page_load_timeout(30)
-                return driver
-            except Exception as e:
-                logger.error(f"Failed to create Chromium driver: {str(e)}")
-                raise
+            print(f"FATAL: Could not start ChromeDriver: {e}", flush=True)
+            import sys
+            sys.exit(1)
+        try:
+            # Final fallback: Try with Chromium type
+            from webdriver_manager.core.os_manager import ChromeType
+            service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver.set_page_load_timeout(30)
+            return driver
+        except Exception as e:
+            logger.error(f"Failed to create Chromium driver: {str(e)}")
+            print(f"FATAL: Could not start Chromium driver: {e}", flush=True)
+            import sys
+            sys.exit(1)
 
     def get_driver(self):
         return self.pool.get()
@@ -561,5 +567,5 @@ async def main():
     save_json(BLACKLIST_JSON, {"removed": blacklist})
 
 if __name__ == "__main__":
-    print("Iniciando validação de links...")
+    print("Iniciando validação de links...", flush=True)
     asyncio.run(main())
