@@ -415,6 +415,11 @@ async def process_duplicates(games, driver):
             eta = avg_time * (total_groups - (idx + 1))
             pbar.set_postfix({"ETA": f"{int(eta//60)}m{int(eta%60)}s"})
             pbar.update(1)
+            # Salvamento incremental após cada grupo
+            save_json(SOURCE_JSON, {"downloads": valid_games})
+            save_json(BLACKLIST_JSON, {"removed": blacklist + [g for g in removed_games if not is_blacklisted(g, blacklist)]})
+            invalid_links.update(all_new_invalid_links)
+            save_invalid_links(invalid_links)
 
     invalid_links.update(all_new_invalid_links)
     save_invalid_links(invalid_links)
