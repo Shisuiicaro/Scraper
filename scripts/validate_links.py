@@ -272,6 +272,7 @@ async def validate_links(game, invalid_links, driver):
     new_invalid_links = set()
     uris = game.get("uris", [])
     game_title = game.get('title', game.get('repackLinkSource', 'SEM TITULO'))
+    file_sizes = []  # Store file sizes for each valid link
 
     if not uris:
         log_msg = f"[SKIP] Game without 'uris': {game_title}"
@@ -317,13 +318,24 @@ async def validate_links(game, invalid_links, driver):
 
         if tasks:
             results = await asyncio.gather(*tasks)
-            for task_index, (is_valid, file_size) in enumerate(results):
+            for task_index, result in enumerate(results):
                 link = link_mapping[task_index]
+                
+                # Handle different result formats
+                if isinstance(result, tuple):
+                    is_valid, file_size = result
+                else:
+                    # For mediafire links that return link, size
+                    valid_link, file_size = result
+                    is_valid = valid_link is not None
+                    
                 if is_valid:
-                    log_msg = f"[VALID LINK] {link}"
+                    log_msg = f"[VALID LINK] {link} - Size: {file_size}"
                     print(f"{Fore.GREEN}{log_msg}", flush=True)
                     logger.info(log_msg)
                     valid_links.append(link)
+                    if file_size:  # Only add valid file sizes
+                        file_sizes.append(file_size)
                 else:
                     log_msg = f"[INVALID LINK] {link}"
                     print(f"{Fore.RED}{log_msg}", flush=True)
@@ -331,7 +343,50 @@ async def validate_links(game, invalid_links, driver):
                     new_invalid_links.add(link)
 
     game["uris"] = valid_links
+    
+    # Set the file size if we have it
+    if file_sizes:
+        # Use the largest file size found (most reliable)
+        game["fileSize"] = get_largest_file_size(file_sizes)
+        log_msg = f"[FILE SIZE] Set to {game['fileSize']} for {game_title}"
+        print(f"{Fore.BLUE}{log_msg}", flush=True)
+        logger.info(log_msg)
+        
     return game, new_invalid_links
+
+def get_largest_file_size(file_sizes):
+    """
+    Find the largest file size from a list of size strings.
+    e.g. ["20 MB", "2 GB", "500 KB"] would return "2 GB"
+    """
+    if not file_sizes:
+        return None
+        
+    # Helper function to convert size string to bytes
+    def size_to_bytes(size_str):
+        size_str = size_str.strip().upper()
+        match = re.search(r"([\d.]+)\s*([KMGT]?B)", size_str)
+        if not match:
+            return 0
+            
+        value, unit = match.groups()
+        value = float(value)
+        multipliers = {
+            "B": 1,
+            "KB": 1024,
+            "MB": 1024**2,
+            "GB": 1024**3,
+            "TB": 1024**4
+        }
+        return value * multipliers.get(unit, 1)
+    
+    # Convert sizes to bytes for comparison
+    sizes_in_bytes = [(size, size_to_bytes(size)) for size in file_sizes]
+    
+    # Find the largest size
+    largest_size = max(sizes_in_bytes, key=lambda x: x[1], default=(None, 0))
+    
+    return largest_size[0]
 
 async def process_duplicates(games, driver):
     blacklist = load_blacklist()
