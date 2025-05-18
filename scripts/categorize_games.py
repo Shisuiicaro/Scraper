@@ -110,13 +110,25 @@ def clean_title(title):
     """Cleans the game title using regex to remove common irrelevant parts."""
     if not title:
         return ""
-    # Remove parts matched by regex, then strip leading/trailing whitespace and convert to lower for consistency
+    # Remove parts matched by regex, then strip leading/trailing whitespace
     cleaned_title = COMPILED_REGEX_TITLE_CLEANING.sub("", title) # Use pre-compiled regex
     # Remove multiple spaces that might result from substitutions
     cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip()
-    return cleaned_title
+    
+    # Additional processing for similar base names with different descriptors
+    # Split into tokens and keep only the core words (excluding version numbers, editions etc.)
+    tokens = [token for token in cleaned_title.split() 
+              if not any(word in token.lower() for word in ['season', 'edition', 'version', 'v\d'])]
+    core_title = ' '.join(tokens)
+    
+    return core_title if len(core_title) >= MIN_CATEGORY_TITLE_LENGTH else cleaned_title
 
 def main():
+    # Set stdout encoding to UTF-8 to handle Unicode characters
+    import sys
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    
     print(f"{Fore.CYAN}Starting game categorization script...{Style.RESET_ALL}")
     print(f"{Fore.YELLOW}Ensure 'fuzzywuzzy', 'python-Levenshtein', 'tqdm', and 'colorama' are installed.{Style.RESET_ALL}")
     print(f"{Fore.YELLOW}pip install fuzzywuzzy python-Levenshtein tqdm colorama{Style.RESET_ALL}")
@@ -183,16 +195,23 @@ def main():
                 ]
 
                 if qualified_preliminary_candidates_vr:
-                    # Stage 2: Refined matching with WRatio on the filtered candidates
+                    # Stage 2: Refined matching with token overlap and WRatio
                     best_refined_match_vr_title = None
                     highest_wratio_score_vr = 0
                     
-                    # Iterate through titles from qualified candidates and score with WRatio
-                    for cand_title, _ in qualified_preliminary_candidates_vr: 
-                        current_wratio_score = fuzz.WRatio(game_title, cand_title)
-                        if current_wratio_score > highest_wratio_score_vr:
-                            highest_wratio_score_vr = current_wratio_score
-                            best_refined_match_vr_title = cand_title
+                    # Iterate through titles from qualified candidates
+                    for cand_title, _ in qualified_preliminary_candidates_vr:
+                        # Check token overlap first
+                        game_tokens = set(game_title.lower().split())
+                        cand_tokens = set(cand_title.lower().split())
+                        overlap = len(game_tokens & cand_tokens) / len(game_tokens | cand_tokens)
+                        
+                        # Only proceed with WRatio if there's significant token overlap
+                        if overlap >= 0.5:
+                            current_wratio_score = fuzz.WRatio(game_title, cand_title)
+                            if current_wratio_score > highest_wratio_score_vr:
+                                highest_wratio_score_vr = current_wratio_score
+                                best_refined_match_vr_title = cand_title
                     
                     # If a good match is found after WRatio refinement
                     if best_refined_match_vr_title and highest_wratio_score_vr >= FUZZY_MATCH_THRESHOLD:
