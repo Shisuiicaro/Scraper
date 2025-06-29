@@ -68,7 +68,7 @@ def save_json(filename, data):
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 def is_valid_link(link):
-    return any(domain in link for domain in ["1fichier.com", "gofile.io", "pixeldrain.com", "mediafire.com", "datanodes.to", "qiwi.gg"])
+    return any(domain in link for domain in ["gofile.io", "pixeldrain.com", "mediafire.com", "datanodes.to", "qiwi.gg"])
 
 async def is_valid_qiwi_link(link, client):
     try:
@@ -389,6 +389,14 @@ def get_largest_file_size(file_sizes):
     return largest_size[0]
 
 async def process_duplicates(games, driver):
+    """
+    Processa jogos duplicados seguindo estas regras:
+    1. Agrupa jogos com títulos similares (após normalização)
+    2. Ordena cada grupo por data de upload (mais recente primeiro)
+    3. Valida apenas a versão mais recente de cada jogo
+    4. Se encontrar uma versão com pelo menos um link válido, ignora as versões mais antigas
+    5. Apenas jogos sem links válidos são adicionados à blacklist
+    """
     blacklist = load_blacklist()
     invalid_links = load_invalid_links()
     grouped_games = {}
@@ -425,13 +433,14 @@ async def process_duplicates(games, driver):
         print(f"{Fore.MAGENTA}{log_msg}", flush=True)
         logger.info(log_msg)
         
+        # Ordena os jogos por data de upload (mais recente primeiro)
         sorted_games = sorted(
             group_games,
             key=lambda g: datetime.fromisoformat(g.get("uploadDate", "1970-01-01T00:00:00")) if g.get("uploadDate") else datetime.min,
             reverse=True
         )
-        multiplayer_games = [g for g in sorted_games if "multiplayer" in g.get("title", "").lower() or "0xdeadcode" in g.get("title", "").lower()]
-        candidates = multiplayer_games if multiplayer_games else sorted_games
+        # Usa diretamente os jogos ordenados por data, sem priorizar jogos multiplayer
+        candidates = sorted_games
         
         for game in candidates:
             game_title = game.get('title', game.get('repackLinkSource', 'SEM TITULO'))
@@ -443,7 +452,7 @@ async def process_duplicates(games, driver):
             all_new_invalid_links.update(new_invalid_links)
             uris = validated.get("uris", [])
             
-            if not uris or (len(uris) == 1 and "1fichier.com" in uris[0]):
+            if not uris:
                 log_msg = f"[REMOVED] {game_title}"
                 print(f"{Fore.RED}{log_msg}", flush=True)
                 logger.info(log_msg)
@@ -454,7 +463,14 @@ async def process_duplicates(games, driver):
             print(f"{Fore.GREEN}{log_msg}", flush=True)
             logger.info(log_msg)
             valid_games.append(validated)
-            removed_games.extend([g for g in group_games if g != validated])
+            
+            # Não adiciona as outras versões à lista de removed_games para evitar que sejam blacklistadas
+            # Apenas ignora as outras versões e passa para o próximo grupo
+            if len(group_games) > 1:
+                skipped_titles = [g.get('title', g.get('repackLinkSource', 'SEM TITULO')) for g in group_games if g != validated]
+                log_msg = f"[SKIPPED ALTERNATIVES] {len(skipped_titles)} versões alternativas ignoradas: {', '.join(skipped_titles[:3])}{' e mais...' if len(skipped_titles) > 3 else ''}"
+                print(f"{Fore.BLUE}{log_msg}", flush=True)
+                logger.info(log_msg)
             return
             
         log_msg = f"[REMOVED ENTIRE GROUP] {group_title}"
@@ -472,6 +488,8 @@ async def process_duplicates(games, driver):
             pbar.update(1)
             # Salvamento incremental após cada grupo
             save_json(SOURCE_JSON, {"downloads": valid_games})
+            # Apenas jogos que realmente não têm links válidos são adicionados à blacklist
+            # Jogos alternativos de versões válidas não são adicionados à lista removed_games
             save_json(BLACKLIST_JSON, {"removed": blacklist + [g for g in removed_games if not is_blacklisted(g, blacklist)]})
             invalid_links.update(all_new_invalid_links)
             save_invalid_links(invalid_links)

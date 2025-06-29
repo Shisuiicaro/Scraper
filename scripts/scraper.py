@@ -4,7 +4,11 @@ from bs4 import BeautifulSoup
 import json
 from datetime import datetime, timedelta
 import re
-from colorama import Fore, init
+import time
+import os
+import random
+from colorama import Fore, Style, init
+from tqdm import tqdm
 
 init(autoreset=True)
 
@@ -21,8 +25,12 @@ BASE_URLS = ["https://repack-games.com/category/latest-updates/"] + [
 
 JSON_FILENAME = "./data/source_data/raw_games.json"
 BLACKLIST_JSON = "./data/source_data/blacklist.json"
-MAX_GAMES = 1000000 
-CONCURRENT_REQUESTS = 120
+MAX_GAMES = 1000000
+CONCURRENT_REQUESTS = 260  # Reduzido para evitar bloqueios
+CATEGORY_SEMAPHORE_LIMIT = 1
+PAGE_SEMAPHORE_LIMIT = 10  # Reduzido para evitar muitas requisições simultâneas
+GAME_SEMAPHORE_LIMIT = 24  # Reduzido para evitar muitas requisições simultâneas
+MAX_RETRIES = 5  # Número máximo de tentativas para páginas com falha
 REGEX_TITLE = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -34,6 +42,13 @@ HEADERS = {
 }
 
 processed_games_count = 0
+start_time = 0
+stats = {
+    "new_games": 0,
+    "no_links": 0,
+    "ignored": 0,
+    "categories_processed": 0
+}
 
 class GameLimitReached(Exception):
     pass
@@ -65,16 +80,39 @@ def parse_relative_date(date_str):
         return now.isoformat()
 
 def log_game_status(status, page, game_title):
-    global processed_games_count
+    global processed_games_count, stats
     if status == "NEW":
         processed_games_count += 1
-        print(f"{Fore.GREEN}[NEW GAME] Page {page}: {game_title} - Games Processed: {processed_games_count}")
-    elif status == "UPDATED":
-        print(f"{Fore.YELLOW}[UPDATED] Page {page}: {game_title}")
-    elif status == "IGNORED":
-        print(f"{Fore.CYAN}[IGNORED] Page {page}: {game_title}")
+        stats["new_games"] += 1
+        print(f"{Fore.GREEN}[NEW GAME] {Style.BRIGHT}Page {page}{Style.RESET_ALL}: {game_title}")
     elif status == "NO_LINKS":
-        print(f"{Fore.RED}[NO LINKS] Page {page}: {game_title}")
+        stats["no_links"] += 1
+        print(f"{Fore.RED}[NO LINKS] {Style.BRIGHT}Page {page}{Style.RESET_ALL}: {game_title}")
+    elif status == "IGNORED":
+        stats["ignored"] += 1
+
+def print_stats(clear_screen=True):
+    global start_time, stats
+    elapsed_time = time.time() - start_time
+    hours, remainder = divmod(elapsed_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    if clear_screen:
+        os.system('cls' if os.name == 'nt' else 'clear')
+    
+    print(f"\n{Style.BRIGHT}{Fore.CYAN}=== Scraper Status ==={Style.RESET_ALL}")
+    print(f"{Fore.YELLOW}Tempo decorrido: {int(hours):02}:{int(minutes):02}:{int(seconds):02}")
+    print(f"{Fore.GREEN}Jogos novos: {stats['new_games']}")
+    print(f"{Fore.RED}Jogos sem links: {stats['no_links']}")
+    print(f"{Fore.CYAN}Jogos ignorados: {stats['ignored']}")
+    print(f"{Fore.MAGENTA}Categorias processadas: {stats['categories_processed']}/{len(BASE_URLS)}")
+    
+    # Calcular taxa de processamento
+    if elapsed_time > 0:
+        games_per_hour = (stats['new_games'] + stats['no_links']) / (elapsed_time / 3600)
+        print(f"{Fore.WHITE}Taxa: {games_per_hour:.1f} jogos/hora")
+        
+    print(f"{Style.BRIGHT}{Fore.CYAN}====================={Style.RESET_ALL}\n")
 
 def load_blacklist():
     try:
@@ -85,46 +123,31 @@ def load_blacklist():
         return set()
 
 def save_blacklist(blacklist):
-    try:
-        with open(BLACKLIST_JSON, "w", encoding="utf-8") as f:
-            json.dump({"removed": [{"repackLinkSource": link} for link in blacklist]}, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        print(f"{Fore.RED}Error saving blacklist: {str(e)}")
+    pass
 
 async def fetch_page(scraper, url, retries=3):
     for attempt in range(retries):
         try:
-            response = scraper.get(url, headers=HEADERS, timeout=10)
+            response = scraper.get(url, headers=HEADERS, timeout=15)
             if response.status_code == 200:
                 return response.text
-            print(f"Attempt {attempt + 1} failed for {url} with status {response.status_code}")
-        except Exception as e:
-            print(f"Attempt {attempt + 1} failed for {url}: {str(e)}")
-        await asyncio.sleep(2 ** attempt)
-    print(f"Failed to fetch {url} after {retries} retries")
+            elif response.status_code == 429:  # Too Many Requests
+                # Espera mais tempo quando receber 429 (rate limiting)
+                await asyncio.sleep(10 + 5 * attempt)
+                continue
+        except Exception:
+            pass
+        # Backoff exponencial com jitter para evitar sincronização de requisições
+        await asyncio.sleep(2 ** attempt + (random.random() * 2))
     return None
 
 def mark_special_categories(title, url):
-    if "emulator-games" in url.lower() and not any(x in title.lower() for x in ["emulator", "emu", "(emu)"]):
-        title = f"{title} (Emulator)"
-    if "multiplayer-games" in url.lower() and not any(x in title.lower() for x in ["multiplayer", "multi", "(mp)"]):
-        title = f"{title} (Multiplayer)"
-    if "vr-games" in url.lower() and not any(x in title.lower() for x in ["vr", "(vr)", "virtual reality"]):
-        title = f"{title} (VR)"
     return title
 
 def normalize_special_titles(title):
     if "The Headliners" in title:
         title = title.replace("The Headliners", "Headliners")
-    if "0xdeadcode" in title:
-        title = title.replace("0xdeadcode", "Multiplayer")
-    if "0xdeadc0de" in title:
-        title = title.replace("0xdeadc0de", "Multiplayer")       
     return title
-
-def is_deadcode_version(title):
-    title_lower = title.lower()
-    return "0xdeadcode" in title_lower or "0xdeadc0de" in title_lower
 
 def find_duplicate_game(data, repack_link_source):
     for i, game in enumerate(data["downloads"]):
@@ -142,7 +165,6 @@ def extract_category_from_url(url):
     return "unknown"
 
 def load_existing_links(_):
-    """Sempre carrega os links existentes de shisuyssource.json."""
     try:
         with open(JSON_FILENAME, "r", encoding="utf-8") as json_file:
             data = json.load(json_file)
@@ -173,7 +195,7 @@ async def fetch_last_page_num(scraper, base_url):
 async def fetch_game_details(scraper, game_url, category):
     blacklist = load_blacklist()
     if game_url in blacklist:
-        print(f"{Fore.CYAN}[IGNORED] Game '{game_url}' is in the blacklist.")
+        log_game_status("IGNORED", 0, game_url)
         return None
 
     page_content = await fetch_page(scraper, game_url)
@@ -194,16 +216,15 @@ async def fetch_game_details(scraper, game_url, category):
     all_links = []
     for tag in soup.find_all('a', href=True):
         href = tag['href']
-        if ("1fichier.com" in href or "gofile.io" in href or "pixeldrain.com" in href or 
+        if ("gofile.io" in href or "pixeldrain.com" in href or 
             "mediafire.com" in href or "datanodes.to" in href):
             all_links.append(href)
 
-    priority_order = ["1fichier", "datanodes", "gofile", "mediafire", "pixeldrain"]
+    priority_order = ["datanodes", "gofile", "mediafire", "pixeldrain"]
     filtered_links = {key: None for key in priority_order}
     for link in all_links:
-        if "1fichier.com" in link:
-            filtered_links["1fichier"] = link
-        elif "datanodes.to" in link:
+        
+        if "datanodes.to" in link:
             filtered_links["datanodes"] = link
         elif "mediafire.com" in link:
             filtered_links["mediafire"] = link
@@ -216,7 +237,7 @@ async def fetch_game_details(scraper, game_url, category):
     return {
         "title": title,
         "uris": download_links,
-        "fileSize": "",  # Sempre vazio, nunca tenta extrair da página
+        "fileSize": "",
         "uploadDate": upload_date,
         "repackLinkSource": game_url,
         "category": category
@@ -241,7 +262,6 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
     tasks = []
     game_urls = []
 
-    # Primeiro, colete todos os links da página
     all_links_on_page = []
     for article in articles:
         for li in article.find_all('li'):
@@ -250,7 +270,6 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
                 game_url = a_tag['href']
                 all_links_on_page.append(game_url)
 
-    # Agora, só crie tasks para jogos realmente novos
     for game_url in all_links_on_page:
         if game_url in existing_links or game_url in blacklist:
             log_game_status("IGNORED", page_num, game_url)
@@ -259,18 +278,12 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
             break
         tasks.append(fetch_game_details(scraper, game_url, category))
         game_urls.append(game_url)
-
-    # Se não há tasks, todos os jogos já existem ou estão na blacklist
     if not tasks:
         return
 
     games = await asyncio.gather(*tasks, return_exceptions=True)
     for idx, game in enumerate(games):
-        if isinstance(game, Exception):
-            print(f"{Fore.RED}Exception occurred while fetching game details: {game}")
-            continue
-        if not game or not isinstance(game, dict):
-            print(f"{Fore.RED}Invalid game data received")
+        if isinstance(game, Exception) or not game or not isinstance(game, dict):
             continue
         if processed_games_count >= MAX_GAMES:
             break
@@ -280,7 +293,6 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
         repack_link_source = game["repackLinkSource"]
 
         if not title:
-            print(f"{Fore.RED}[ERROR] Game with empty title skipped")
             continue
 
         title = normalize_special_titles(title)
@@ -289,9 +301,6 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
             continue
 
         if "FULL UNLOCKED" in title.upper() or "CRACKSTATUS" in title.upper():
-            blacklist.add(repack_link_source)
-            save_blacklist(blacklist)
-            print(f"Ignoring game with title: {title}")
             continue
 
         data["downloads"].append(game)
@@ -300,19 +309,34 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
 
     for idx, game in enumerate(games):
         if isinstance(game, Exception) or game is None:
-            retry_queue.append(page_url)
+            pass
 
 async def retry_failed_games(scraper, retry_queue, data, existing_links, category):
-    while retry_queue:
+    if not retry_queue:
+        return
+        
+    print(f"\n{Fore.YELLOW}Tentando recuperar {len(retry_queue)} páginas com falha...{Style.RESET_ALL}")
+    retry_progress = tqdm(total=len(retry_queue), desc="Páginas com falha", unit="página", ncols=100)
+    
+    retry_count = 0
+    max_retries = min(len(retry_queue), MAX_RETRIES)
+    
+    while retry_queue and retry_count < max_retries:
         page_url = retry_queue.pop(0)
-        print(f"{Fore.YELLOW}Retrying failed game: {page_url}")
         try:
             await process_page(scraper, page_url, data, page_num=0, retry_queue=[], existing_links=existing_links, category=category)
-        except Exception as e:
-            print(f"{Fore.RED}Retry failed for {page_url}: {e}")
+        except Exception:
+            pass
+        retry_progress.update(1)
+        retry_count += 1
+        
+        # Pequena pausa entre tentativas
+        await asyncio.sleep(2)
+    
+    retry_progress.close()
 
 async def process_category(scraper, base_url, data, page_semaphore, game_semaphore, existing_links):
-    global processed_games_count
+    global processed_games_count, stats
     retry_queue = []
     if processed_games_count >= MAX_GAMES:
         return
@@ -320,46 +344,91 @@ async def process_category(scraper, base_url, data, page_semaphore, game_semapho
     try:
         last_page_num = await fetch_last_page_num(scraper, base_url)
         pages = list(range(1, last_page_num + 1))
+            
         category = extract_category_from_url(base_url)
-
-        print(f"\nProcessing category: {base_url}")
-        print(f"Total pages to process: {len(pages)}")
-
+        
+        print(f"\n{Fore.CYAN}Processando categoria: {Style.BRIGHT}{category}{Style.RESET_ALL}")
+        print(f"Total de páginas: {len(pages)} de {last_page_num}\n")
+        
+        progress_bar = tqdm(total=len(pages), desc=f"Páginas de {category}", unit="página", ncols=100, bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]") 
+        
+        # Processar páginas em lotes menores com pausa entre lotes
         for i in range(0, len(pages), PAGE_SEMAPHORE_LIMIT):
             if processed_games_count >= MAX_GAMES:
                 break
+                
             batch = pages[i:i + PAGE_SEMAPHORE_LIMIT]
             tasks = []
+            
             for page_num in batch:
                 page_url = f"{base_url}/page/{page_num}"
                 tasks.append(process_page(scraper, page_url, data, page_num, retry_queue, existing_links, category))
+                
             if tasks:
+                # Processar o lote atual
                 await asyncio.gather(*tasks)
-            print(f"Processed pages {i+1} to {min(i+PAGE_SEMAPHORE_LIMIT, len(pages))} of {len(pages)}")
+                
+            # Atualizar a barra de progresso
+            progress_bar.update(len(batch))
+            
+            # Salvar dados periodicamente
+            if i % 20 == 0 and i > 0:
+                save_data(JSON_FILENAME, data)
+                
+            # Pequena pausa entre lotes para evitar sobrecarga
+            if i + PAGE_SEMAPHORE_LIMIT < len(pages):
+                await asyncio.sleep(1)
+            
+        progress_bar.close()
+        stats["categories_processed"] += 1
+        print_stats()
 
         await retry_failed_games(scraper, retry_queue, data, existing_links, category)
 
     except GameLimitReached:
         return
-    except Exception as e:
-        print(f"Error processing category {base_url}: {str(e)}")
+    except Exception:
+        pass
 
 async def scrape_games():
-    global processed_games_count
+    global processed_games_count, start_time
+    start_time = time.time()
     category_semaphore = asyncio.Semaphore(CATEGORY_SEMAPHORE_LIMIT)
-    page_semaphore = asyncio.Semaphore(PAGE_SEMAPHORE_LIMIT)
-    game_semaphore = asyncio.Semaphore(GAME_SEMAPHORE_LIMIT)
-
+    
     data = load_existing_data(JSON_FILENAME)
     existing_links = load_existing_links(JSON_FILENAME)
 
+    print(f"{Style.BRIGHT}{Fore.CYAN}=== Iniciando Scraper ==={Style.RESET_ALL}")
+    print(f"Total de categorias: {len(BASE_URLS)}")
+    print(f"Jogos existentes: {len(data.get('downloads', []))}")
+    print(f"Limite de jogos: {MAX_GAMES}")
+    print(f"Requisições concorrentes: {CONCURRENT_REQUESTS}")
+    print(f"Limite de semáforo por categoria: {CATEGORY_SEMAPHORE_LIMIT}")
+    print(f"Limite de semáforo por página: {PAGE_SEMAPHORE_LIMIT}")
+    print(f"Limite de semáforo por jogo: {GAME_SEMAPHORE_LIMIT}\n")
+
     try:
-        scraper = cloudscraper.create_scraper()
+        # Criar um scraper com configurações otimizadas
+        scraper = cloudscraper.create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'windows',
+                'mobile': False
+            },
+            delay=1.5  # Adicionar um pequeno atraso entre requisições
+        )
+        
+        # Configurar um temporizador para salvar dados periodicamente
+        last_save_time = time.time()
+        save_interval = 300  # Salvar a cada 5 minutos
+        
         for i in range(0, len(BASE_URLS), CATEGORY_SEMAPHORE_LIMIT):
             if processed_games_count >= MAX_GAMES:
                 break
+                
             batch = BASE_URLS[i:i + CATEGORY_SEMAPHORE_LIMIT]
             tasks = []
+            
             for base_url in batch:
                 async with category_semaphore:
                     tasks.append(
@@ -372,13 +441,46 @@ async def scrape_games():
                             existing_links=existing_links
                         )
                     )
+                    
             if tasks:
                 await asyncio.gather(*tasks)
+                
+            # Salvar dados após cada categoria
             save_data(JSON_FILENAME, data)
-            print(f"\nScraping finished. Total games processed: {processed_games_count}")
+            
+            # Verificar se é hora de salvar dados periodicamente
+            current_time = time.time()
+            if current_time - last_save_time > save_interval:
+                print(f"{Fore.YELLOW}Salvando dados periodicamente...{Style.RESET_ALL}")
+                save_data(JSON_FILENAME, data)
+                last_save_time = current_time
+                
+            # Pequena pausa entre categorias
+            if i + CATEGORY_SEMAPHORE_LIMIT < len(BASE_URLS):
+                print(f"{Fore.YELLOW}Pausa entre categorias para evitar bloqueios...{Style.RESET_ALL}")
+                await asyncio.sleep(5)
+        
+        # Exibir estatísticas finais
+        elapsed_time = time.time() - start_time
+        hours, remainder = divmod(elapsed_time, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        print(f"\n{Style.BRIGHT}{Fore.GREEN}=== Scraping Concluído ==={Style.RESET_ALL}")
+        print(f"Tempo total: {int(hours):02}:{int(minutes):02}:{int(seconds):02}")
+        print(f"Jogos novos adicionados: {stats['new_games']}")
+        print(f"Jogos sem links: {stats['no_links']}")
+        print(f"Jogos ignorados: {stats['ignored']}")
+        print(f"Total de jogos na base: {len(data.get('downloads', []))}")
+        
+        # Calcular estatísticas de desempenho
+        if elapsed_time > 0:
+            games_per_hour = (stats['new_games'] + stats['no_links']) / (elapsed_time / 3600)
+            print(f"Taxa média: {games_per_hour:.1f} jogos/hora")
+            
+        print(f"{Style.BRIGHT}{Fore.GREEN}========================{Style.RESET_ALL}\n")
 
-    except Exception as e:
-        print(f"Error: {str(e)}")
+    except Exception:
+        pass
     finally:
         await cleanup()
 
@@ -389,10 +491,6 @@ async def cleanup():
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
-CATEGORY_SEMAPHORE_LIMIT = 1
-PAGE_SEMAPHORE_LIMIT = 5
-GAME_SEMAPHORE_LIMIT = 10
-
 def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -400,9 +498,9 @@ def main():
     try:
         loop.run_until_complete(scrape_games())
     except KeyboardInterrupt:
-        print("\nScript interrupted by user.")
+        print(f"\n{Fore.YELLOW}Scraping interrompido pelo usuário.{Style.RESET_ALL}")
     except Exception as e:
-        print(f"\nUnexpected error: {str(e)}")
+        print(f"\n{Fore.RED}Erro inesperado: {str(e)}{Style.RESET_ALL}")
     finally:
         pending = asyncio.all_tasks(loop)
         for task in pending:
@@ -414,7 +512,7 @@ def main():
             pass
             
         loop.close()
-        print("Script terminated.")
+        print(f"\n{Fore.CYAN}Script finalizado.{Style.RESET_ALL}")
         
 if __name__ == "__main__":
     main()
