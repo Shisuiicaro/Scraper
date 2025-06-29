@@ -10,6 +10,12 @@ import random
 from colorama import Fore, Style, init
 from tqdm import tqdm
 
+# Melhorias implementadas para evitar duplicações:
+# 1. Uso de conjunto (set) para garantir URLs únicas em cada página
+# 2. Verificação adicional antes de adicionar um jogo para evitar duplicações entre categorias
+# 3. Uso de lock para proteger o acesso concorrente a existing_links e data
+# 4. Proteção com lock ao salvar dados periodicamente
+
 init(autoreset=True)
 
 BASE_URLS = ["https://repack-games.com/category/latest-updates/"] + [
@@ -243,7 +249,7 @@ async def fetch_game_details(scraper, game_url, category):
         "category": category
     }
 
-async def process_page(scraper, page_url, data, page_num, retry_queue, existing_links, category):
+async def process_page(scraper, page_url, data, page_num, retry_queue, existing_links, existing_links_lock, category):
     global processed_games_count
     if processed_games_count >= MAX_GAMES:
         raise GameLimitReached()
@@ -270,7 +276,10 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
                 game_url = a_tag['href']
                 all_links_on_page.append(game_url)
 
-    for game_url in all_links_on_page:
+    # Usar um conjunto para garantir que não processamos URLs duplicadas na mesma página
+    unique_game_urls = set(all_links_on_page)
+    
+    for game_url in unique_game_urls:
         if game_url in existing_links or game_url in blacklist:
             log_game_status("IGNORED", page_num, game_url)
             continue
@@ -302,16 +311,23 @@ async def process_page(scraper, page_url, data, page_num, retry_queue, existing_
 
         if "FULL UNLOCKED" in title.upper() or "CRACKSTATUS" in title.upper():
             continue
+            
+        # Usar lock para verificar e atualizar existing_links de forma thread-safe
+        async with existing_links_lock:
+            # Verificar novamente se o link já existe para evitar duplicações entre categorias
+            if repack_link_source in existing_links:
+                log_game_status("IGNORED", page_num, title)
+                continue
 
-        data["downloads"].append(game)
-        existing_links.add(repack_link_source)
-        log_game_status("NEW", page_num, title)
+            data["downloads"].append(game)
+            existing_links.add(repack_link_source)
+            log_game_status("NEW", page_num, title)
 
     for idx, game in enumerate(games):
         if isinstance(game, Exception) or game is None:
             pass
 
-async def retry_failed_games(scraper, retry_queue, data, existing_links, category):
+async def retry_failed_games(scraper, retry_queue, data, existing_links, existing_links_lock, category):
     if not retry_queue:
         return
         
@@ -324,7 +340,7 @@ async def retry_failed_games(scraper, retry_queue, data, existing_links, categor
     while retry_queue and retry_count < max_retries:
         page_url = retry_queue.pop(0)
         try:
-            await process_page(scraper, page_url, data, page_num=0, retry_queue=[], existing_links=existing_links, category=category)
+            await process_page(scraper, page_url, data, page_num=0, retry_queue=[], existing_links=existing_links, existing_links_lock=existing_links_lock, category=category)
         except Exception:
             pass
         retry_progress.update(1)
@@ -335,7 +351,7 @@ async def retry_failed_games(scraper, retry_queue, data, existing_links, categor
     
     retry_progress.close()
 
-async def process_category(scraper, base_url, data, page_semaphore, game_semaphore, existing_links):
+async def process_category(scraper, base_url, data, page_semaphore, game_semaphore, existing_links, existing_links_lock):
     global processed_games_count, stats
     retry_queue = []
     if processed_games_count >= MAX_GAMES:
@@ -362,7 +378,7 @@ async def process_category(scraper, base_url, data, page_semaphore, game_semapho
             
             for page_num in batch:
                 page_url = f"{base_url}/page/{page_num}"
-                tasks.append(process_page(scraper, page_url, data, page_num, retry_queue, existing_links, category))
+                tasks.append(process_page(scraper, page_url, data, page_num, retry_queue, existing_links, existing_links_lock, category))
                 
             if tasks:
                 # Processar o lote atual
@@ -371,9 +387,10 @@ async def process_category(scraper, base_url, data, page_semaphore, game_semapho
             # Atualizar a barra de progresso
             progress_bar.update(len(batch))
             
-            # Salvar dados periodicamente
+            # Salvar dados periodicamente com proteção de lock
             if i % 20 == 0 and i > 0:
-                save_data(JSON_FILENAME, data)
+                async with existing_links_lock:
+                    save_data(JSON_FILENAME, data)
                 
             # Pequena pausa entre lotes para evitar sobrecarga
             if i + PAGE_SEMAPHORE_LIMIT < len(pages):
@@ -383,7 +400,7 @@ async def process_category(scraper, base_url, data, page_semaphore, game_semapho
         stats["categories_processed"] += 1
         print_stats()
 
-        await retry_failed_games(scraper, retry_queue, data, existing_links, category)
+        await retry_failed_games(scraper, retry_queue, data, existing_links, existing_links_lock, category)
 
     except GameLimitReached:
         return
@@ -396,7 +413,11 @@ async def scrape_games():
     category_semaphore = asyncio.Semaphore(CATEGORY_SEMAPHORE_LIMIT)
     
     data = load_existing_data(JSON_FILENAME)
+    # Usar um conjunto para rastrear links já processados
     existing_links = load_existing_links(JSON_FILENAME)
+    
+    # Adicionar um lock para proteger o acesso concorrente a existing_links e data
+    existing_links_lock = asyncio.Lock()
 
     print(f"{Style.BRIGHT}{Fore.CYAN}=== Iniciando Scraper ==={Style.RESET_ALL}")
     print(f"Total de categorias: {len(BASE_URLS)}")
@@ -438,21 +459,24 @@ async def scrape_games():
                             data,
                             page_semaphore=None,
                             game_semaphore=None,
-                            existing_links=existing_links
+                            existing_links=existing_links,
+                            existing_links_lock=existing_links_lock
                         )
                     )
                     
             if tasks:
                 await asyncio.gather(*tasks)
                 
-            # Salvar dados após cada categoria
-            save_data(JSON_FILENAME, data)
+            # Salvar dados após cada categoria com proteção de lock
+            async with existing_links_lock:
+                save_data(JSON_FILENAME, data)
             
             # Verificar se é hora de salvar dados periodicamente
             current_time = time.time()
             if current_time - last_save_time > save_interval:
                 print(f"{Fore.YELLOW}Salvando dados periodicamente...{Style.RESET_ALL}")
-                save_data(JSON_FILENAME, data)
+                async with existing_links_lock:
+                    save_data(JSON_FILENAME, data)
                 last_save_time = current_time
                 
             # Pequena pausa entre categorias
