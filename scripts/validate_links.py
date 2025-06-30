@@ -5,21 +5,40 @@ import json
 import time
 import logging
 import asyncio
+import signal
+import sys
 from datetime import datetime
-from typing import List, Tuple, Set, Dict, Any
+from typing import List, Tuple, Set, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from bs4 import BeautifulSoup
-from colorama import Fore, init
+from colorama import Fore, Style, init
 from tqdm import tqdm
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
+# Inicialização do colorama para formatação de cores no terminal
+init(autoreset=True)
+
+# Estatísticas globais para acompanhamento do progresso
+stats = {
+    "total_games": 0,
+    "valid_games": 0,
+    "removed_games": 0,
+    "valid_links": 0,
+    "invalid_links": 0,
+    "groups_processed": 0,
+    "total_groups": 0
+}
+
+# Tempo de início para cálculo de duração
+start_time = 0
+
 def setup_logging():
-    import sys
+    """Configura o sistema de logging para arquivo e console"""
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(message)s',
@@ -34,7 +53,6 @@ def setup_logging():
 
 
 logger = setup_logging()
-init(autoreset=True)
 
 # Arquivos de dados
 SOURCE_JSON = "./data/raw/filtred.json"
@@ -56,6 +74,118 @@ HEADERS = {
     "Cache-Control": "no-cache",
     "Pragma": "no-cache"
 }
+
+# Configuração para tratamento de interrupção (Ctrl+C)
+shutdown_requested = False
+
+def signal_handler(sig, frame):
+    """Manipulador de sinal para capturar Ctrl+C e realizar um desligamento limpo"""
+    global shutdown_requested
+    if not shutdown_requested:
+        print(f"\n{Fore.YELLOW}Interrupção detectada. Finalizando após a validação atual...{Style.RESET_ALL}")
+        shutdown_requested = True
+    else:
+        print(f"\n{Fore.RED}Forçando encerramento imediato!{Style.RESET_ALL}")
+        print_final_stats()
+        sys.exit(1)
+
+# Registra o manipulador de sinal
+signal.signal(signal.SIGINT, signal_handler)
+
+def print_stats(clear_screen=False):
+    """Exibe estatísticas atuais do processo de validação"""
+    global start_time, stats
+    
+    elapsed_time = time.time() - start_time
+    hours, remainder = divmod(elapsed_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    if clear_screen:
+        os.system('cls' if os.name == 'nt' else 'clear')
+    
+    print(f"\n{Style.BRIGHT}{Fore.CYAN}=== Status da Validação ==={Style.RESET_ALL}")
+    print(f"{Fore.YELLOW}Tempo decorrido: {int(hours):02}:{int(minutes):02}:{int(seconds):02}")
+    print(f"{Fore.GREEN}Jogos válidos: {stats['valid_games']}")
+    print(f"{Fore.RED}Jogos removidos: {stats['removed_games']}")
+    print(f"{Fore.GREEN}Links válidos: {stats['valid_links']}")
+    print(f"{Fore.RED}Links inválidos: {stats['invalid_links']}")
+    print(f"{Fore.MAGENTA}Grupos processados: {stats['groups_processed']}/{stats['total_groups']}")
+    
+    # Calcular taxa de processamento
+    if elapsed_time > 0:
+        groups_per_hour = stats['groups_processed'] / (elapsed_time / 3600)
+        print(f"{Fore.WHITE}Taxa: {groups_per_hour:.1f} grupos/hora")
+        
+        # Estimativa de tempo restante
+        if stats['groups_processed'] > 0 and stats['total_groups'] > 0:
+            remaining_groups = stats['total_groups'] - stats['groups_processed']
+            eta_seconds = (elapsed_time / stats['groups_processed']) * remaining_groups
+            eta_hours, eta_remainder = divmod(eta_seconds, 3600)
+            eta_minutes, eta_seconds = divmod(eta_remainder, 60)
+            print(f"{Fore.CYAN}Tempo restante estimado: {int(eta_hours):02}:{int(eta_minutes):02}:{int(eta_seconds):02}")
+    
+    print(f"{Style.BRIGHT}{Fore.CYAN}========================{Style.RESET_ALL}\n")
+
+def print_final_stats():
+    """Exibe estatísticas finais ao término do processo"""
+    global start_time, stats
+    
+    elapsed_time = time.time() - start_time
+    hours, remainder = divmod(elapsed_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    print(f"\n{Style.BRIGHT}{Fore.GREEN}=== Validação Concluída ==={Style.RESET_ALL}")
+    print(f"Tempo total: {int(hours):02}:{int(minutes):02}:{int(seconds):02}")
+    print(f"{Fore.GREEN}Jogos válidos: {stats['valid_games']}")
+    print(f"{Fore.RED}Jogos removidos: {stats['removed_games']}")
+    print(f"{Fore.GREEN}Links válidos: {stats['valid_links']}")
+    print(f"{Fore.RED}Links inválidos: {stats['invalid_links']}")
+    print(f"{Fore.MAGENTA}Grupos processados: {stats['groups_processed']}/{stats['total_groups']}")
+    
+    # Calcular estatísticas de desempenho
+    if elapsed_time > 0 and stats['groups_processed'] > 0:
+        groups_per_hour = stats['groups_processed'] / (elapsed_time / 3600)
+        print(f"Taxa média: {groups_per_hour:.1f} grupos/hora")
+    
+    print(f"{Style.BRIGHT}{Fore.GREEN}========================{Style.RESET_ALL}\n")
+
+def log_link_status(status: str, link: str, file_size: str = ""):
+    """Registra o status de um link com formatação colorida"""
+    global stats
+    
+    if status == "VALID":
+        stats["valid_links"] += 1
+        size_info = f" - Size: {file_size}" if file_size else ""
+        print(f"{Fore.GREEN}[VALID LINK] {link}{size_info}")
+    elif status == "INVALID":
+        stats["invalid_links"] += 1
+        print(f"{Fore.RED}[INVALID LINK] {link}")
+    elif status == "SKIP":
+        print(f"{Fore.YELLOW}[SKIP LINK] {link}")
+    elif status == "VALIDATING":
+        print(f"{Fore.CYAN}[VALIDATING] {link}")
+
+def log_game_status(status: str, game_title: str, details: str = ""):
+    """Registra o status de um jogo com formatação colorida"""
+    global stats
+    
+    if status == "VALID":
+        stats["valid_games"] += 1
+        print(f"{Fore.GREEN}[VALIDATED] {Style.BRIGHT}{game_title}{Style.RESET_ALL}")
+    elif status == "REMOVED":
+        stats["removed_games"] += 1
+        print(f"{Fore.RED}[REMOVED] {Style.BRIGHT}{game_title}{Style.RESET_ALL}")
+    elif status == "BLACKLISTED":
+        print(f"{Fore.YELLOW}[BLACKLISTED] {Style.BRIGHT}{game_title}{Style.RESET_ALL}")
+    elif status == "SKIP":
+        print(f"{Fore.YELLOW}[SKIP] {details}: {Style.BRIGHT}{game_title}{Style.RESET_ALL}")
+    elif status == "GROUP":
+        print(f"{Fore.MAGENTA}[GROUP {details}] Processing: {Style.BRIGHT}{game_title}{Style.RESET_ALL}")
+    elif status == "SKIPPED_ALTERNATIVES":
+        print(f"{Fore.BLUE}[SKIPPED ALTERNATIVES] {details}")
+    elif status == "FILE_SIZE":
+        print(f"{Fore.BLUE}[FILE SIZE] Set to {details} for {Style.BRIGHT}{game_title}{Style.RESET_ALL}")
+
 
 def normalize_title(title: str) -> str:
     """Normaliza o título removendo informações desnecessárias como versões, tags, etc."""
@@ -338,6 +468,8 @@ def save_invalid_links(invalid_links: Set[str]) -> None:
 
 async def validate_links(game: Dict[str, Any], invalid_links: Set[str], driver: webdriver.Chrome) -> Tuple[Dict[str, Any], Set[str]]:
     """Valida os links de um jogo e retorna o jogo atualizado e novos links inválidos"""
+    global shutdown_requested
+    
     valid_links = []
     new_invalid_links = set()
     uris = game.get("uris", [])
@@ -346,9 +478,8 @@ async def validate_links(game: Dict[str, Any], invalid_links: Set[str], driver: 
 
     # Verifica se o jogo tem links para validar
     if not uris:
-        log_msg = f"[SKIP] Game without 'uris': {game_title}"
-        print(f"{Fore.YELLOW}{log_msg}", flush=True)
-        logger.info(log_msg)
+        log_game_status("SKIP", game_title, "Game without 'uris'")
+        logger.info(f"[SKIP] Game without 'uris': {game_title}")
         return game, new_invalid_links
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -357,16 +488,18 @@ async def validate_links(game: Dict[str, Any], invalid_links: Set[str], driver: 
 
         # Prepara tarefas de validação para cada link
         for link in uris:
+            # Verifica se foi solicitada interrupção
+            if shutdown_requested:
+                break
+                
             # Pula links já conhecidos como inválidos
             if link in invalid_links:
-                log_msg = f"[SKIP LINK] Already invalid: {link}"
-                print(f"{Fore.YELLOW}{log_msg}", flush=True)
-                logger.info(log_msg)
+                log_link_status("SKIP", link, "Already invalid")
+                logger.info(f"[SKIP LINK] Already invalid: {link}")
                 continue
 
-            log_msg = f"[VALIDATING LINK] {link}"
-            print(f"{Fore.CYAN}{log_msg}", flush=True)
-            logger.info(log_msg)
+            log_link_status("VALIDATING", link)
+            logger.info(f"[VALIDATING LINK] {link}")
 
             # Seleciona o método de validação apropriado para cada tipo de link
             if "qiwi.gg" in link:
@@ -386,13 +519,12 @@ async def validate_links(game: Dict[str, Any], invalid_links: Set[str], driver: 
                 link_mapping[len(tasks) - 1] = link
             elif is_valid_link(link):
                 # Links de domínios conhecidos são aceitos diretamente
-                log_msg = f"[DIRECT ACCEPT LINK] {link}"
-                print(f"{Fore.GREEN}{log_msg}", flush=True)
-                logger.info(log_msg)
+                log_link_status("VALID", link)
+                logger.info(f"[DIRECT ACCEPT LINK] {link}")
                 valid_links.append(link)
 
         # Processa os resultados das validações
-        if tasks:
+        if tasks and not shutdown_requested:
             results = await asyncio.gather(*tasks)
             for task_index, result in enumerate(results):
                 link = link_mapping[task_index]
@@ -409,16 +541,14 @@ async def validate_links(game: Dict[str, Any], invalid_links: Set[str], driver: 
                     is_valid, file_size = False, ""
                     
                 if is_valid:
-                    log_msg = f"[VALID LINK] {link} - Size: {file_size}"
-                    print(f"{Fore.GREEN}{log_msg}", flush=True)
-                    logger.info(log_msg)
+                    log_link_status("VALID", link, file_size)
+                    logger.info(f"[VALID LINK] {link} - Size: {file_size}")
                     valid_links.append(link)
                     if file_size:  # Adiciona apenas tamanhos válidos
                         file_sizes.append(file_size)
                 else:
-                    log_msg = f"[INVALID LINK] {link}"
-                    print(f"{Fore.RED}{log_msg}", flush=True)
-                    logger.info(log_msg)
+                    log_link_status("INVALID", link)
+                    logger.info(f"[INVALID LINK] {link}")
                     new_invalid_links.add(link)
 
     # Atualiza o jogo com os links válidos
@@ -428,9 +558,8 @@ async def validate_links(game: Dict[str, Any], invalid_links: Set[str], driver: 
     if file_sizes:
         # Usa o maior tamanho de arquivo encontrado (mais confiável)
         game["fileSize"] = get_largest_file_size(file_sizes)
-        log_msg = f"[FILE SIZE] Set to {game['fileSize']} for {game_title}"
-        print(f"{Fore.BLUE}{log_msg}", flush=True)
-        logger.info(log_msg)
+        log_game_status("FILE_SIZE", game_title, game["fileSize"])
+        logger.info(f"[FILE SIZE] Set to {game['fileSize']} for {game_title}")
         
     return game, new_invalid_links
 
@@ -477,24 +606,30 @@ async def process_duplicates(games: List[Dict[str, Any]], driver: webdriver.Chro
     4. Se encontrar uma versão com pelo menos um link válido, ignora as versões mais antigas
     5. Apenas jogos sem links válidos são adicionados à blacklist
     """
+    global stats, start_time, shutdown_requested
+    
     blacklist = load_blacklist()
     invalid_links = load_invalid_links()
     grouped_games: Dict[str, List[Dict[str, Any]]] = {}
 
     # Agrupa jogos por título normalizado
-    total_games = len(games)
-    print(f"{Fore.BLUE}Total de jogos recebidos: {total_games}", flush=True)
+    stats["total_games"] = len(games)
+    print(f"{Fore.BLUE}Total de jogos recebidos: {stats['total_games']}{Style.RESET_ALL}")
     
     for game in games:
+        # Verifica se foi solicitada interrupção
+        if shutdown_requested:
+            break
+            
         # Pula jogos já na blacklist
         if is_blacklisted(game, blacklist):
-            print(f"{Fore.YELLOW}[BLACKLISTED] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}", flush=True)
+            log_game_status("BLACKLISTED", game.get('title', game.get('repackLinkSource', 'SEM TITULO')))
             continue
             
         # Verifica se o jogo tem título
         title = game.get("title", None)
         if not title:
-            print(f"{Fore.YELLOW}[SEM TITLE] {game.get('repackLinkSource', 'SEM TITULO')}", flush=True)
+            log_game_status("SKIP", game.get('repackLinkSource', 'SEM TITULO'), "Sem título")
             continue
             
         # Agrupa por título normalizado
@@ -503,8 +638,8 @@ async def process_duplicates(games: List[Dict[str, Any]], driver: webdriver.Chro
             grouped_games[normalized_title] = []
         grouped_games[normalized_title].append(game)
 
-    total_groups = len(grouped_games)
-    print(f"{Fore.BLUE}Total de grupos de jogos: {total_groups}", flush=True)
+    stats["total_groups"] = len(grouped_games)
+    print(f"{Fore.BLUE}Total de grupos de jogos: {stats['total_groups']}{Style.RESET_ALL}")
 
     valid_games: List[Dict[str, Any]] = []
     removed_games: List[Dict[str, Any]] = []
@@ -515,12 +650,21 @@ async def process_duplicates(games: List[Dict[str, Any]], driver: webdriver.Chro
     
     async def process_game_group(group_games: List[Dict[str, Any]], group_idx: int) -> None:
         """Processa um grupo de jogos com o mesmo título normalizado"""
+        global stats, shutdown_requested
         nonlocal valid_games, removed_games, all_new_invalid_links
         
+        # Verifica se foi solicitada interrupção
+        if shutdown_requested:
+            return
+            
         group_title = group_games[0].get('title', group_games[0].get('repackLinkSource', 'SEM TITULO'))
-        log_msg = f"[{group_idx+1}/{total_groups}] Processing group: {group_title} ({len(group_games)} games)"
-        print(f"{Fore.MAGENTA}{log_msg}", flush=True)
-        logger.info(log_msg)
+        stats["groups_processed"] += 1
+        log_game_status("GROUP", group_title, f"{stats['groups_processed']}/{stats['total_groups']} ({len(group_games)} games)")
+        logger.info(f"[{stats['groups_processed']}/{stats['total_groups']}] Processing group: {group_title} ({len(group_games)} games)")
+        
+        # Atualiza estatísticas periodicamente
+        if stats["groups_processed"] % 5 == 0:
+            print_stats()
         
         # Ordena os jogos por data de upload (mais recente primeiro)
         sorted_games = sorted(
@@ -531,10 +675,13 @@ async def process_duplicates(games: List[Dict[str, Any]], driver: webdriver.Chro
         
         # Processa cada jogo do grupo, começando pelo mais recente
         for game in sorted_games:
+            # Verifica se foi solicitada interrupção
+            if shutdown_requested:
+                return
+                
             game_title = game.get('title', game.get('repackLinkSource', 'SEM TITULO'))
-            log_msg = f"Validating game: {game_title}"
-            print(f"{Fore.CYAN}{log_msg}", flush=True)
-            logger.info(log_msg)
+            print(f"{Fore.CYAN}Validando jogo: {Style.BRIGHT}{game_title}{Style.RESET_ALL}")
+            logger.info(f"Validating game: {game_title}")
             
             # Valida os links do jogo
             validated, new_invalid_links = await validate_links(game, invalid_links, driver)
@@ -543,47 +690,76 @@ async def process_duplicates(games: List[Dict[str, Any]], driver: webdriver.Chro
             
             # Se não tem links válidos, marca como removido
             if not uris:
-                log_msg = f"[REMOVED] {game_title}"
-                print(f"{Fore.RED}{log_msg}", flush=True)
-                logger.info(log_msg)
+                log_game_status("REMOVED", game_title)
+                logger.info(f"[REMOVED] {game_title}")
                 removed_games.append(validated)
+                stats["removed_games"] += 1
                 continue
             
             # Se tem links válidos, adiciona à lista de jogos válidos
-            log_msg = f"[VALIDATED] {game_title}"
-            print(f"{Fore.GREEN}{log_msg}", flush=True)
-            logger.info(log_msg)
+            log_game_status("VALID", game_title)
+            logger.info(f"[VALIDATED] {game_title}")
             valid_games.append(validated)
+            stats["valid_games"] += 1
+            stats["valid_links"] += len(uris)
             
             # Se encontrou uma versão válida, ignora as outras versões do mesmo jogo
             if len(group_games) > 1:
                 skipped_titles = [g.get('title', g.get('repackLinkSource', 'SEM TITULO')) for g in group_games if g != validated]
-                log_msg = f"[SKIPPED ALTERNATIVES] {len(skipped_titles)} versões alternativas ignoradas: {', '.join(skipped_titles[:3])}{' e mais...' if len(skipped_titles) > 3 else ''}"
-                print(f"{Fore.BLUE}{log_msg}", flush=True)
-                logger.info(log_msg)
+                skipped_info = f"{len(skipped_titles)} versões alternativas ignoradas: {', '.join(skipped_titles[:3])}{' e mais...' if len(skipped_titles) > 3 else ''}"
+                log_game_status("SKIPPED_ALTERNATIVES", "", skipped_info)
+                logger.info(f"[SKIPPED ALTERNATIVES] {skipped_info}")
+                
+                # Adiciona os jogos ignorados à contagem de removidos
+                stats["removed_games"] += len(skipped_titles)
             return
         
         # Se chegou aqui, nenhum jogo do grupo tem links válidos
-        log_msg = f"[REMOVED ENTIRE GROUP] {group_title}"
-        print(f"{Fore.RED}{log_msg}", flush=True)
-        logger.info(log_msg)
+        log_game_status("REMOVED", group_title, "GRUPO INTEIRO - Nenhum link válido")
+        logger.info(f"[REMOVED ENTIRE GROUP] {group_title}")
         removed_games.extend(group_games)
+        stats["removed_games"] += len(group_games)
 
-    with tqdm(total=total_groups, desc="Grupos de jogos validados", ncols=100) as pbar:
-        for idx, group_key in enumerate(group_keys):
-            await process_game_group(grouped_games[group_key], idx)
-            elapsed = time.time() - start_time
-            avg_time = elapsed / (idx + 1)
-            eta = avg_time * (total_groups - (idx + 1))
-            pbar.set_postfix({"ETA": f"{int(eta//60)}m{int(eta%60)}s"})
-            pbar.update(1)
-            # Salvamento incremental após cada grupo
-            save_json(SOURCE_JSON, {"downloads": valid_games})
-            # Apenas jogos que realmente não têm links válidos são adicionados à blacklist
-            # Jogos alternativos de versões válidas não são adicionados à lista removed_games
-            save_json(BLACKLIST_JSON, {"removed": blacklist + [g for g in removed_games if not is_blacklisted(g, blacklist)]})
-            invalid_links.update(all_new_invalid_links)
-            save_invalid_links(invalid_links)
+    # Inicializa estatísticas
+    stats["groups_processed"] = 0
+    
+    try:
+        with tqdm(total=stats["total_groups"], desc="Grupos de jogos validados", ncols=100) as pbar:
+            for idx, group_key in enumerate(group_keys):
+                # Verifica se foi solicitada interrupção
+                if shutdown_requested:
+                    print(f"\n{Fore.YELLOW}Interrupção detectada. Salvando progresso...{Style.RESET_ALL}")
+                    break
+                    
+                await process_game_group(grouped_games[group_key], idx)
+                
+                # Atualiza a barra de progresso
+                elapsed = time.time() - start_time
+                if idx > 0:  # Evita divisão por zero
+                    avg_time = elapsed / idx
+                    eta = avg_time * (stats["total_groups"] - idx)
+                    pbar.set_postfix({"ETA": f"{int(eta//60)}m{int(eta%60)}s"})
+                pbar.update(1)
+                
+                # Salvamento incremental após cada grupo
+                save_json(SOURCE_JSON, {"downloads": valid_games})
+                # Apenas jogos que realmente não têm links válidos são adicionados à blacklist
+                # Jogos alternativos de versões válidas não são adicionados à lista removed_games
+                save_json(BLACKLIST_JSON, {"removed": blacklist + [g for g in removed_games if not is_blacklisted(g, blacklist)]})
+                invalid_links.update(all_new_invalid_links)
+                save_invalid_links(invalid_links)
+                
+                # A cada 20 grupos, exibe estatísticas completas
+                if idx % 20 == 0 and idx > 0:
+                    print_stats()
+    except Exception as e:
+        print(f"\n{Fore.RED}Erro durante o processamento: {str(e)}{Style.RESET_ALL}")
+        logger.error(f"Erro durante o processamento: {str(e)}")
+        # Mesmo em caso de erro, tenta salvar o progresso
+        save_json(SOURCE_JSON, {"downloads": valid_games})
+        save_json(BLACKLIST_JSON, {"removed": blacklist + [g for g in removed_games if not is_blacklisted(g, blacklist)]})
+        invalid_links.update(all_new_invalid_links)
+        save_invalid_links(invalid_links)
 
     invalid_links.update(all_new_invalid_links)
     save_invalid_links(invalid_links)
@@ -720,6 +896,14 @@ async def validate_gofile_link_api(link: str, retries: int = 3) -> Tuple[bool, s
 
 async def main() -> None:
     """Função principal que carrega os dados, processa os jogos e salva os resultados"""
+    global start_time, stats, shutdown_requested
+    
+    # Inicializa o tempo de início
+    start_time = time.time()
+    
+    # Exibe mensagem de início
+    print(f"\n{Style.BRIGHT}{Fore.CYAN}=== Iniciando Validação de Links ==={Style.RESET_ALL}\n")
+    
     # Carrega os dados dos jogos do arquivo JSON
     shisuy_data = load_json(RAW_LINKS)
     
@@ -730,25 +914,60 @@ async def main() -> None:
         games = shisuy_data["games"]
     else:
         games = []
-
-    # Inicializa o driver do Chrome para validação de links
-    driver = create_chromium_driver()
-    try:
-        # Processa os jogos para identificar duplicatas e validar links
-        valid_games, removed_games = await process_duplicates(games, driver)
-    finally:
-        # Garante que o driver seja fechado mesmo em caso de erro
-        driver.quit()
-
-    # Atualiza a blacklist com os jogos removidos
-    blacklist = load_blacklist()
-    blacklist.extend([g for g in removed_games if not is_blacklisted(g, blacklist)])
     
-    # Salva os jogos válidos e a blacklist atualizada
-    save_json(SOURCE_JSON, {"downloads": valid_games})
-    save_json(BLACKLIST_JSON, {"removed": blacklist})
+    # Atualiza estatísticas
+    stats["total_games"] = len(games)
+    print(f"{Fore.BLUE}Total de jogos carregados: {stats['total_games']}")
+
+    try:
+        # Inicializa o driver do Chrome para validação de links
+        driver = create_chromium_driver()
+        try:
+            # Processa os jogos para identificar duplicatas e validar links
+            valid_games, removed_games = await process_duplicates(games, driver)
+            
+            # Atualiza estatísticas finais
+            stats["valid_games"] = len(valid_games)
+            stats["removed_games"] = len(removed_games)
+            
+        except Exception as e:
+            print(f"\n{Fore.RED}Erro durante o processamento: {str(e)}{Style.RESET_ALL}")
+            logger.error(f"Erro durante o processamento: {str(e)}")
+            raise
+        finally:
+            # Garante que o driver seja fechado mesmo em caso de erro
+            driver.quit()
+
+        # Atualiza a blacklist com os jogos removidos
+        blacklist = load_blacklist()
+        new_blacklist_entries = [g for g in removed_games if not is_blacklisted(g, blacklist)]
+        blacklist.extend(new_blacklist_entries)
+        
+        # Salva os jogos válidos e a blacklist atualizada
+        save_json(SOURCE_JSON, {"downloads": valid_games})
+        save_json(BLACKLIST_JSON, {"removed": blacklist})
+        
+        print(f"\n{Fore.GREEN}Dados salvos com sucesso:{Style.RESET_ALL}")
+        print(f"- Jogos válidos: {len(valid_games)}")
+        print(f"- Jogos na blacklist: {len(blacklist)}")
+        
+    except KeyboardInterrupt:
+        print(f"\n{Fore.YELLOW}Processo interrompido pelo usuário.{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"\n{Fore.RED}Erro fatal: {str(e)}{Style.RESET_ALL}")
+        logger.error(f"Erro fatal: {str(e)}")
+    finally:
+        # Exibe estatísticas finais
+        print_final_stats()
 
 
 if __name__ == "__main__":
-    print("Iniciando validação de links...", flush=True)
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print(f"\n{Fore.YELLOW}Processo interrompido pelo usuário.{Style.RESET_ALL}")
+        print_final_stats()
+    except Exception as e:
+        print(f"\n{Fore.RED}Erro fatal: {str(e)}{Style.RESET_ALL}")
+        logger.error(f"Erro fatal: {str(e)}")
+        print_final_stats()
