@@ -29,13 +29,13 @@ BASE_URLS = ["https://repack-games.com/category/latest-updates/"] + [
     ]
 ]
 
-JSON_FILENAME = "./data/source_data/raw_games.json"
-BLACKLIST_JSON = "./data/source_data/blacklist.json"
+JSON_FILENAME = "./data/raw/games.json"
+BLACKLIST_JSON = "./data/config/untracked.json"
 MAX_GAMES = 1000000
 CONCURRENT_REQUESTS = 260  # Reduzido para evitar bloqueios
 CATEGORY_SEMAPHORE_LIMIT = 1
 PAGE_SEMAPHORE_LIMIT = 10     # Reduzido para evitar muitas requisições simultâneas
-GAME_SEMAPHORE_LIMIT = 50  # Reduzido para evitar muitas requisições simultâneas
+GAME_SEMAPHORE_LIMIT = 85  # Reduzido para evitar muitas requisições simultâneas
 MAX_RETRIES = 5  # Número máximo de tentativas para páginas com falha
 REGEX_TITLE = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 HEADERS = {

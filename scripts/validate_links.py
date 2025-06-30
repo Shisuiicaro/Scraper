@@ -34,10 +34,10 @@ logger = setup_logging()
 
 init(autoreset=True)
 
-SOURCE_JSON = "./data/source_data/valid_games.json"
-BLACKLIST_JSON = "./data/source_data/blacklist.json"
-RAW_LINKS = "./data/source_data/raw_games.json"
-INVALID_LINKS_JSON = "./data/source_data/invalid_links.json"
+SOURCE_JSON = "./data/raw/filtred.json"
+BLACKLIST_JSON = "./data/config/untracked.json"
+RAW_LINKS = "./data/raw/games.json"
+INVALID_LINKS_JSON = "./data/config/invalids.json"
 REGEX_TITLE_NORMALIZATION = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 
 HEADERS = {
