@@ -1,20 +1,22 @@
 import json
 import re
+import os
+import json
+import time
+import logging
+import asyncio
 from datetime import datetime
+from typing import List, Tuple, Set, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
+
 import httpx
 from bs4 import BeautifulSoup
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from colorama import Fore, init
+from tqdm import tqdm
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
-from typing import List, Tuple
-import os
-from colorama import Fore, Style, init
-from tqdm import tqdm
-import time
-import logging
 
 def setup_logging():
     import sys
@@ -30,16 +32,20 @@ def setup_logging():
     )
     return logging.getLogger('validator')
 
-logger = setup_logging()
 
+logger = setup_logging()
 init(autoreset=True)
 
+# Arquivos de dados
 SOURCE_JSON = "./data/raw/filtred.json"
 BLACKLIST_JSON = "./data/config/untracked.json"
 RAW_LINKS = "./data/raw/games.json"
 INVALID_LINKS_JSON = "./data/config/invalids.json"
+
+# Regex para normalização de títulos
 REGEX_TITLE_NORMALIZATION = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"
 
+# Headers HTTP padrão
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/121.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -51,98 +57,135 @@ HEADERS = {
     "Pragma": "no-cache"
 }
 
-def normalize_title(title):
+def normalize_title(title: str) -> str:
+    """Normaliza o título removendo informações desnecessárias como versões, tags, etc."""
     return re.sub(REGEX_TITLE_NORMALIZATION, "", title, flags=re.IGNORECASE).strip().lower()
 
-def load_json(filename):
+
+def load_json(filename: str) -> Dict[str, Any]:
+    """Carrega dados de um arquivo JSON ou retorna estrutura padrão se o arquivo não existir"""
     try:
         with open(filename, "r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {"downloads": []}
 
-def save_json(filename, data):
+
+def save_json(filename: str, data: Dict[str, Any]) -> None:
+    """Salva dados em um arquivo JSON com formatação adequada"""
     if "downloads" in data and "name" not in data:
         data["name"] = "Shisuy's source"
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-def is_valid_link(link):
-    return any(domain in link for domain in ["gofile.io", "pixeldrain.com", "mediafire.com", "datanodes.to", "qiwi.gg"])
+def is_valid_link(link: str) -> bool:
+    """Verifica se o link pertence a um dos hosts suportados"""
+    valid_domains = ["gofile.io", "pixeldrain.com", "mediafire.com", "datanodes.to", "qiwi.gg"]
+    return any(domain in link for domain in valid_domains)
 
-async def is_valid_qiwi_link(link, client):
+
+async def is_valid_qiwi_link(link: str, client: httpx.AsyncClient) -> Tuple[bool, str]:
+    """Verifica se um link do qiwi.gg é válido e retorna o tamanho do arquivo"""
     try:
         response = await client.get(link, timeout=10)
         if response.status_code != 200:
-            return False, None
+            return False, ""
+            
         soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Verifica se o arquivo é um torrent (não desejado)
         title_element = soup.find('h1', class_='page_TextHeading__VsM7r')
         if title_element:
             file_name = title_element.get_text(strip=True)
             if "TRNT.rar" in file_name or ".torrent" in file_name:
-                return False, None
+                return False, ""
+                
+        # Tenta encontrar o tamanho do arquivo
         size_element = soup.find(string=re.compile(r"Download\s+\d+(\.\d+)?\s*(GB|MB)", re.IGNORECASE))
         if size_element:
             file_size = size_element.strip().replace("Download ", "")
             return True, file_size
+            
+        # Busca alternativa pelo tamanho do arquivo
         text = soup.get_text(" ", strip=True)
         match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", text, re.IGNORECASE)
         if match:
             return True, match.group(1)
-        return False, None
+            
+        return False, ""
     except Exception:
-        return False, None
+        return False, ""
 
-async def is_valid_datanodes_link(link, client):
+async def is_valid_datanodes_link(link: str, client: httpx.AsyncClient) -> Tuple[bool, str]:
+    """Verifica se um link do datanodes.to é válido e retorna o tamanho do arquivo"""
     try:
         response = await client.get(link, timeout=10)
         if response.status_code != 200:
-            return False, None
+            return False, ""
+            
         soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Verifica se o arquivo é um torrent (não desejado)
         title_element = soup.find('span', class_='block truncate w-auto')
         if title_element:
             file_name = title_element.get_text(strip=True)
             if "TRNT.rar" in file_name or ".torrent" in file_name:
-                return False, None
+                return False, ""
+                
+        # Tenta encontrar o tamanho do arquivo
         size_element = soup.find('small', class_='m-0 text-xs text-gray-500 font-bold')
         if size_element:
             file_size = size_element.get_text(strip=True)
             return True, file_size
+            
+        # Busca alternativa pelo tamanho do arquivo
         text = soup.get_text(" ", strip=True)
         match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", text, re.IGNORECASE)
         if match:
             return True, match.group(1)
-        return False, None
+            
+        return False, ""
     except Exception:
-        return False, None
+        return False, ""
 
-async def is_valid_pixeldrain_link(link, client):
+async def is_valid_pixeldrain_link(link: str, client: httpx.AsyncClient) -> Tuple[bool, str]:
+    """Verifica se um link do pixeldrain.com é válido e retorna o tamanho do arquivo"""
     try:
         file_id = link.split("/")[-1]
         api_url = f"https://pixeldrain.com/api/file/{file_id}/info"
         response = await client.get(api_url, timeout=10)
+        
         if response.status_code != 200:
-            return False, None
+            return False, ""
+            
         file_info = response.json()
         if file_info.get("success") is not True:
-            return False, None
+            return False, ""
+            
+        # Verifica se o arquivo é um torrent (não desejado)
         file_name = file_info.get("name", "").lower()
         if any(indicator in file_name for indicator in ["trnt.rar", ".torrent", "bittorrent"]):
-            return False, None
+            return False, ""
+            
+        # Calcula o tamanho do arquivo
         file_size_bytes = file_info.get("size", 0)
         if file_size_bytes > 0:
             file_size = f"{file_size_bytes / (1024 ** 2):.2f} MB" if file_size_bytes < (1024 ** 3) else f"{file_size_bytes / (1024 ** 3):.2f} GB"
             return True, file_size
+            
+        # Busca alternativa pelo tamanho do arquivo
         for v in file_info.values():
             if isinstance(v, str):
                 match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", v, re.IGNORECASE)
                 if match:
                     return True, match.group(1)
-        return False, None
+                    
+        return False, ""
     except Exception:
-        return False, None
+        return False, ""
 
-def extract_mediafire_key(url):
+def extract_mediafire_key(url: str) -> str:
+    """Extrai a chave de identificação de um link do MediaFire"""
     url = re.sub(r'/file/?$', '', url)
     try:
         if "/file/" in url:
@@ -150,9 +193,11 @@ def extract_mediafire_key(url):
             return parts[0]
     except Exception:
         pass
-    return None
+    return ""
 
-def create_chromium_driver():
+def create_chromium_driver() -> webdriver.Chrome:
+    """Cria e configura uma instância do Chrome WebDriver para automação"""
+    # Configuração das opções do Chrome
     chrome_options = Options()
     chrome_options.add_argument('--headless')
     chrome_options.add_argument('--no-sandbox')
@@ -162,19 +207,21 @@ def create_chromium_driver():
     chrome_options.add_argument('--disable-extensions')
     chrome_options.page_load_strategy = 'eager'
     chrome_options.binary_location = "/usr/bin/chromium-browser"
+    
     try:
         import subprocess
-        import re
-        from webdriver_manager.chrome import ChromeDriverManager
-
-        def get_chromium_full_version():
+        import sys
+        
+        def get_chromium_full_version() -> str:
+            """Obtém a versão completa do Chromium instalado"""
             try:
                 output = subprocess.check_output(["/usr/bin/chromium-browser", "--version"]).decode()
                 version = re.search(r"(\d+\.\d+\.\d+\.\d+)", output)
-                return version.group(1) if version else None
+                return version.group(1) if version else ""
             except Exception:
-                return None
+                return ""
 
+        # Tenta usar a versão específica do Chromium instalado
         chromium_full_version = get_chromium_full_version()
         if chromium_full_version:
             service = Service(ChromeDriverManager(driver_version=chromium_full_version).install())
@@ -182,6 +229,7 @@ def create_chromium_driver():
             driver.set_page_load_timeout(30)
             return driver
 
+        # Fallback para a versão padrão do ChromeDriver
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.set_page_load_timeout(30)
@@ -190,61 +238,78 @@ def create_chromium_driver():
     except Exception as e:
         logger.error(f"Failed to create Chrome driver: {str(e)}")
         print(f"FATAL: Could not start ChromeDriver: {e}", flush=True)
-        import sys
         sys.exit(1)
 
-def check_mediafire_link(link, driver):
+def check_mediafire_link(link: str, driver: webdriver.Chrome) -> str:
+    """Verifica se um link do MediaFire é válido usando o Selenium"""
     try:
         driver.set_page_load_timeout(10)
         driver.get(link)
+        
+        # Verifica condições de erro
         if "error.php" in driver.current_url:
-            return None
+            return ""
         if "File sharing and storage made simple" in driver.title:
-            return None
+            return ""
         if "Dangerous File Blocked" in driver.page_source:
-            return None
+            return ""
+            
         return link
     except Exception:
-        return None
+        return ""
 
-async def validate_mediafire_link(session, link, driver):
+
+async def validate_mediafire_link(session: httpx.AsyncClient, link: str, driver: webdriver.Chrome) -> Tuple[str, str]:
+    """Valida um link do MediaFire e retorna o link e o tamanho do arquivo se válido"""
+    # Verifica o link usando Selenium em uma thread separada
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor(max_workers=1) as executor:
         result = await loop.run_in_executor(executor, check_mediafire_link, link, driver)
         if not result:
-            return None, ""
+            return "", ""
+            
+    # Extrai a chave do MediaFire e verifica via API
     quick_key = extract_mediafire_key(link)
     if not quick_key:
-        return None, ""
+        return "", ""
+        
     api_url = f"https://www.mediafire.com/api/1.1/file/get_info.php?quick_key={quick_key}&response_format=json"
+    
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(api_url, headers=HEADERS)
+            
             if response.status_code == 200:
                 data = response.json()
+                
                 if data.get("response", {}).get("result") == "Success":
                     file_info = data["response"]["file_info"]
                     file_size = file_info.get("size", 0)
                     file_name = file_info.get("filename", "").lower()
+                    
+                    # Verifica se é um torrent
                     if ".torrent" in file_name:
-                        return None, ""
+                        return "", ""
+                        
+                    # Processa o tamanho do arquivo
                     if not file_size or int(file_size) <= 0:
+                        # Busca alternativa pelo tamanho do arquivo
                         for v in file_info.values():
                             if isinstance(v, str):
                                 match = re.search(r"(\d+(?:\.\d+)?\s*(?:GB|MB|KB|TB))", v, re.IGNORECASE)
                                 if match:
                                     return link, match.group(1)
-                        return None, ""
+                        return "", ""
+                        
                     formatted_size = format_size(int(file_size))
                     return link, formatted_size
-                else:
-                    return None, ""
-            else:
-                return None, ""
+                    
+            return "", ""
     except Exception:
-        return None, ""
+        return "", ""
 
-def format_size(size_in_bytes):
+def format_size(size_in_bytes: int) -> str:
+    """Formata o tamanho em bytes para uma representação legível (KB, MB, GB)"""
     if size_in_bytes < 1024 ** 2:
         return f"{size_in_bytes / 1024:.2f} KB"
     elif size_in_bytes < 1024 ** 3:
@@ -252,7 +317,9 @@ def format_size(size_in_bytes):
     else:
         return f"{size_in_bytes / (1024 ** 3):.2f} GB"
 
-def load_invalid_links():
+
+def load_invalid_links() -> Set[str]:
+    """Carrega a lista de links inválidos do arquivo JSON"""
     if os.path.exists(INVALID_LINKS_JSON):
         try:
             with open(INVALID_LINKS_JSON, "r", encoding="utf-8") as f:
@@ -261,19 +328,23 @@ def load_invalid_links():
             return set()
     return set()
 
-def save_invalid_links(invalid_links):
-    # Ensure the directory exists
+
+def save_invalid_links(invalid_links: Set[str]) -> None:
+    """Salva a lista de links inválidos em um arquivo JSON"""
+    # Garante que o diretório existe
     os.makedirs(os.path.dirname(INVALID_LINKS_JSON), exist_ok=True)
     with open(INVALID_LINKS_JSON, "w", encoding="utf-8") as f:
         json.dump(list(invalid_links), f, ensure_ascii=False, indent=4)
 
-async def validate_links(game, invalid_links, driver):
+async def validate_links(game: Dict[str, Any], invalid_links: Set[str], driver: webdriver.Chrome) -> Tuple[Dict[str, Any], Set[str]]:
+    """Valida os links de um jogo e retorna o jogo atualizado e novos links inválidos"""
     valid_links = []
     new_invalid_links = set()
     uris = game.get("uris", [])
     game_title = game.get('title', game.get('repackLinkSource', 'SEM TITULO'))
-    file_sizes = []  # Store file sizes for each valid link
+    file_sizes = []  # Armazena tamanhos de arquivo para cada link válido
 
+    # Verifica se o jogo tem links para validar
     if not uris:
         log_msg = f"[SKIP] Game without 'uris': {game_title}"
         print(f"{Fore.YELLOW}{log_msg}", flush=True)
@@ -284,7 +355,9 @@ async def validate_links(game, invalid_links, driver):
         tasks = []
         link_mapping = {}
 
-        for index, link in enumerate(uris):
+        # Prepara tarefas de validação para cada link
+        for link in uris:
+            # Pula links já conhecidos como inválidos
             if link in invalid_links:
                 log_msg = f"[SKIP LINK] Already invalid: {link}"
                 print(f"{Fore.YELLOW}{log_msg}", flush=True)
@@ -295,6 +368,7 @@ async def validate_links(game, invalid_links, driver):
             print(f"{Fore.CYAN}{log_msg}", flush=True)
             logger.info(log_msg)
 
+            # Seleciona o método de validação apropriado para cada tipo de link
             if "qiwi.gg" in link:
                 tasks.append(is_valid_qiwi_link(link, client))
                 link_mapping[len(tasks) - 1] = link
@@ -311,30 +385,35 @@ async def validate_links(game, invalid_links, driver):
                 tasks.append(validate_gofile_link_api(link))
                 link_mapping[len(tasks) - 1] = link
             elif is_valid_link(link):
+                # Links de domínios conhecidos são aceitos diretamente
                 log_msg = f"[DIRECT ACCEPT LINK] {link}"
                 print(f"{Fore.GREEN}{log_msg}", flush=True)
                 logger.info(log_msg)
                 valid_links.append(link)
 
+        # Processa os resultados das validações
         if tasks:
             results = await asyncio.gather(*tasks)
             for task_index, result in enumerate(results):
                 link = link_mapping[task_index]
                 
-                # Handle different result formats
+                # Trata diferentes formatos de resultado
                 if isinstance(result, tuple):
                     is_valid, file_size = result
+                    # Para links do MediaFire que retornam (link, tamanho)
+                    if isinstance(is_valid, str):
+                        valid_link, file_size = result
+                        is_valid = bool(valid_link)
                 else:
-                    # For mediafire links that return link, size
-                    valid_link, file_size = result
-                    is_valid = valid_link is not None
+                    # Caso inesperado
+                    is_valid, file_size = False, ""
                     
                 if is_valid:
                     log_msg = f"[VALID LINK] {link} - Size: {file_size}"
                     print(f"{Fore.GREEN}{log_msg}", flush=True)
                     logger.info(log_msg)
                     valid_links.append(link)
-                    if file_size:  # Only add valid file sizes
+                    if file_size:  # Adiciona apenas tamanhos válidos
                         file_sizes.append(file_size)
                 else:
                     log_msg = f"[INVALID LINK] {link}"
@@ -342,11 +421,12 @@ async def validate_links(game, invalid_links, driver):
                     logger.info(log_msg)
                     new_invalid_links.add(link)
 
+    # Atualiza o jogo com os links válidos
     game["uris"] = valid_links
     
-    # Set the file size if we have it
+    # Define o tamanho do arquivo se disponível
     if file_sizes:
-        # Use the largest file size found (most reliable)
+        # Usa o maior tamanho de arquivo encontrado (mais confiável)
         game["fileSize"] = get_largest_file_size(file_sizes)
         log_msg = f"[FILE SIZE] Set to {game['fileSize']} for {game_title}"
         print(f"{Fore.BLUE}{log_msg}", flush=True)
@@ -354,20 +434,20 @@ async def validate_links(game, invalid_links, driver):
         
     return game, new_invalid_links
 
-def get_largest_file_size(file_sizes):
+def get_largest_file_size(file_sizes: List[str]) -> str:
     """
-    Find the largest file size from a list of size strings.
-    e.g. ["20 MB", "2 GB", "500 KB"] would return "2 GB"
+    Encontra o maior tamanho de arquivo de uma lista de strings de tamanho.
+    Ex: ["20 MB", "2 GB", "500 KB"] retornaria "2 GB"
     """
     if not file_sizes:
-        return None
+        return ""
         
-    # Helper function to convert size string to bytes
-    def size_to_bytes(size_str):
+    def size_to_bytes(size_str: str) -> float:
+        """Converte uma string de tamanho (ex: '10 MB') para bytes"""
         size_str = size_str.strip().upper()
         match = re.search(r"([\d.]+)\s*([KMGT]?B)", size_str)
         if not match:
-            return 0
+            return 0.0
             
         value, unit = match.groups()
         value = float(value)
@@ -380,15 +460,15 @@ def get_largest_file_size(file_sizes):
         }
         return value * multipliers.get(unit, 1)
     
-    # Convert sizes to bytes for comparison
+    # Converte tamanhos para bytes para comparação
     sizes_in_bytes = [(size, size_to_bytes(size)) for size in file_sizes]
     
-    # Find the largest size
-    largest_size = max(sizes_in_bytes, key=lambda x: x[1], default=(None, 0))
+    # Encontra o maior tamanho
+    largest_size = max(sizes_in_bytes, key=lambda x: x[1], default=("", 0))
     
     return largest_size[0]
 
-async def process_duplicates(games, driver):
+async def process_duplicates(games: List[Dict[str, Any]], driver: webdriver.Chrome) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Processa jogos duplicados seguindo estas regras:
     1. Agrupa jogos com títulos similares (após normalização)
@@ -399,18 +479,25 @@ async def process_duplicates(games, driver):
     """
     blacklist = load_blacklist()
     invalid_links = load_invalid_links()
-    grouped_games = {}
+    grouped_games: Dict[str, List[Dict[str, Any]]] = {}
 
+    # Agrupa jogos por título normalizado
     total_games = len(games)
     print(f"{Fore.BLUE}Total de jogos recebidos: {total_games}", flush=True)
+    
     for game in games:
+        # Pula jogos já na blacklist
         if is_blacklisted(game, blacklist):
             print(f"{Fore.YELLOW}[BLACKLISTED] {game.get('title', game.get('repackLinkSource', 'SEM TITULO'))}", flush=True)
             continue
+            
+        # Verifica se o jogo tem título
         title = game.get("title", None)
         if not title:
             print(f"{Fore.YELLOW}[SEM TITLE] {game.get('repackLinkSource', 'SEM TITULO')}", flush=True)
             continue
+            
+        # Agrupa por título normalizado
         normalized_title = normalize_title(title)
         if normalized_title not in grouped_games:
             grouped_games[normalized_title] = []
@@ -419,15 +506,17 @@ async def process_duplicates(games, driver):
     total_groups = len(grouped_games)
     print(f"{Fore.BLUE}Total de grupos de jogos: {total_groups}", flush=True)
 
-    valid_games = []
-    removed_games = []
-    all_new_invalid_links = set()
+    valid_games: List[Dict[str, Any]] = []
+    removed_games: List[Dict[str, Any]] = []
+    all_new_invalid_links: Set[str] = set()
 
     group_keys = list(grouped_games.keys())
     start_time = time.time()
     
-    async def process_game_group(group_games, group_idx):
+    async def process_game_group(group_games: List[Dict[str, Any]], group_idx: int) -> None:
+        """Processa um grupo de jogos com o mesmo título normalizado"""
         nonlocal valid_games, removed_games, all_new_invalid_links
+        
         group_title = group_games[0].get('title', group_games[0].get('repackLinkSource', 'SEM TITULO'))
         log_msg = f"[{group_idx+1}/{total_groups}] Processing group: {group_title} ({len(group_games)} games)"
         print(f"{Fore.MAGENTA}{log_msg}", flush=True)
@@ -439,40 +528,42 @@ async def process_duplicates(games, driver):
             key=lambda g: datetime.fromisoformat(g.get("uploadDate", "1970-01-01T00:00:00")) if g.get("uploadDate") else datetime.min,
             reverse=True
         )
-        # Usa diretamente os jogos ordenados por data, sem priorizar jogos multiplayer
-        candidates = sorted_games
         
-        for game in candidates:
+        # Processa cada jogo do grupo, começando pelo mais recente
+        for game in sorted_games:
             game_title = game.get('title', game.get('repackLinkSource', 'SEM TITULO'))
             log_msg = f"Validating game: {game_title}"
             print(f"{Fore.CYAN}{log_msg}", flush=True)
             logger.info(log_msg)
             
+            # Valida os links do jogo
             validated, new_invalid_links = await validate_links(game, invalid_links, driver)
             all_new_invalid_links.update(new_invalid_links)
             uris = validated.get("uris", [])
             
+            # Se não tem links válidos, marca como removido
             if not uris:
                 log_msg = f"[REMOVED] {game_title}"
                 print(f"{Fore.RED}{log_msg}", flush=True)
                 logger.info(log_msg)
                 removed_games.append(validated)
                 continue
-                
+            
+            # Se tem links válidos, adiciona à lista de jogos válidos
             log_msg = f"[VALIDATED] {game_title}"
             print(f"{Fore.GREEN}{log_msg}", flush=True)
             logger.info(log_msg)
             valid_games.append(validated)
             
-            # Não adiciona as outras versões à lista de removed_games para evitar que sejam blacklistadas
-            # Apenas ignora as outras versões e passa para o próximo grupo
+            # Se encontrou uma versão válida, ignora as outras versões do mesmo jogo
             if len(group_games) > 1:
                 skipped_titles = [g.get('title', g.get('repackLinkSource', 'SEM TITULO')) for g in group_games if g != validated]
                 log_msg = f"[SKIPPED ALTERNATIVES] {len(skipped_titles)} versões alternativas ignoradas: {', '.join(skipped_titles[:3])}{' e mais...' if len(skipped_titles) > 3 else ''}"
                 print(f"{Fore.BLUE}{log_msg}", flush=True)
                 logger.info(log_msg)
             return
-            
+        
+        # Se chegou aqui, nenhum jogo do grupo tem links válidos
         log_msg = f"[REMOVED ENTIRE GROUP] {group_title}"
         print(f"{Fore.RED}{log_msg}", flush=True)
         logger.info(log_msg)
@@ -498,7 +589,8 @@ async def process_duplicates(games, driver):
     save_invalid_links(invalid_links)
     return valid_games, removed_games
 
-def load_blacklist():
+def load_blacklist() -> List[Dict[str, Any]]:
+    """Carrega a lista de jogos na blacklist do arquivo JSON"""
     if os.path.exists(BLACKLIST_JSON):
         try:
             with open(BLACKLIST_JSON, "r", encoding="utf-8") as f:
@@ -508,21 +600,25 @@ def load_blacklist():
             return []
     return []
 
-def is_blacklisted(game, blacklist):
+def is_blacklisted(game: Dict[str, Any], blacklist: List[Dict[str, Any]]) -> bool:
+    """Verifica se um jogo está na blacklist comparando o repackLinkSource"""
     repack = game.get("repackLinkSource")
     for removed in blacklist:
         if repack and repack == removed.get("repackLinkSource"):
             return True
     return False
 
+# Constantes para Gofile API
 WT = "4fd6sg89d7s6"
 GOFILE_TOKEN = None
 
-async def authorize_gofile():
+async def authorize_gofile() -> str:
+    """Obtém um token de autorização para a API do Gofile"""
     global GOFILE_TOKEN
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post("https://api.gofile.io/accounts", headers=HEADERS)
+        
         if response.status_code == 200 and response.json().get("status") == "ok":
             GOFILE_TOKEN = response.json()["data"]["token"]
             return GOFILE_TOKEN
@@ -532,42 +628,74 @@ async def authorize_gofile():
         return ""
 
 async def validate_gofile_link_api(link: str, retries: int = 3) -> Tuple[bool, str]:
+    """Valida um link do Gofile usando a API e retorna status e tamanho do arquivo
+    
+    Args:
+        link: URL do Gofile para validar
+        retries: Número de tentativas em caso de falha
+        
+    Returns:
+        Tupla com (é_válido, tamanho_formatado)
+    """
+    # Extrai o ID do arquivo da URL
     m = re.search(r"gofile\.io/d/([^/?]+)", link)
     if not m:
         return False, ""
+        
     file_id = m.group(1)
     api_url = f"https://api.gofile.io/contents/{file_id}?wt={WT}"
+    
+    # Garante que temos um token de autorização
     global GOFILE_TOKEN
     if not GOFILE_TOKEN:
         await authorize_gofile()
+        
+    # Prepara os headers com o token se disponível
     headers = {**HEADERS}
     if GOFILE_TOKEN:
         headers["Authorization"] = f"Bearer {GOFILE_TOKEN}"
+        
+    # Configura o proxy SOCKS5 para contornar bloqueios
     from httpx_socks import AsyncProxyTransport
     transport = AsyncProxyTransport.from_url("socks5://127.0.0.1:9050")
-    await asyncio.sleep(1)
+    
+    await asyncio.sleep(1)  # Pequena pausa para evitar rate limiting
+    
+    # Tenta validar o link com retentativas em caso de falha
     for attempt in range(retries):
         try:
             async with httpx.AsyncClient(timeout=15, transport=transport) as client:
                 response = await client.get(api_url, headers=headers)
+                
             if response.status_code == 200:
                 try:
                     data = response.json()
                     if not isinstance(data, dict):
                         continue
+                        
                     if data.get("status") == "ok":
                         content = data.get("data", {})
+                        
+                        # Verifica se é uma pasta e tem arquivos
                         if isinstance(content, dict) and content.get("type") == "folder":
                             children = content.get("children", {})
+                            
                             if children:
+                                # Pega o primeiro arquivo da pasta
                                 first_child = next(iter(children.values()))
                                 name = first_child.get("name", "").lower()
+                                
+                                # Filtra arquivos indesejados
                                 if any(bad in name for bad in ["torrent", "this content does not exist", "cold"]):
                                     return False, ""
+                                    
+                                # Obtém e formata o tamanho do arquivo
                                 size_bytes = first_child.get("size")
                                 if size_bytes and str(size_bytes).isdigit():
                                     bytes_val = int(size_bytes)
+                                    
                                     if bytes_val > 0:
+                                        # Formata o tamanho em unidades apropriadas
                                         if bytes_val < 1024:
                                             size_str = f"{bytes_val} B"
                                         elif bytes_val < 1024 ** 2:
@@ -580,14 +708,22 @@ async def validate_gofile_link_api(link: str, retries: int = 3) -> Tuple[bool, s
                 except Exception:
                     continue
         except Exception:
+            # Espera exponencial entre tentativas
             await asyncio.sleep(2 ** attempt)
             continue
+            
+        # Espera entre tentativas se não for a última
         if attempt < retries - 1:
             await asyncio.sleep(2 ** attempt)
-    return False, ""
+            
+    return False, ""  # Retorna falso se todas as tentativas falharem
 
-async def main():
+async def main() -> None:
+    """Função principal que carrega os dados, processa os jogos e salva os resultados"""
+    # Carrega os dados dos jogos do arquivo JSON
     shisuy_data = load_json(RAW_LINKS)
+    
+    # Extrai a lista de jogos dependendo da estrutura do JSON
     if "downloads" in shisuy_data:
         games = shisuy_data["downloads"]
     elif "games" in shisuy_data:
@@ -595,16 +731,23 @@ async def main():
     else:
         games = []
 
+    # Inicializa o driver do Chrome para validação de links
     driver = create_chromium_driver()
     try:
+        # Processa os jogos para identificar duplicatas e validar links
         valid_games, removed_games = await process_duplicates(games, driver)
     finally:
+        # Garante que o driver seja fechado mesmo em caso de erro
         driver.quit()
 
+    # Atualiza a blacklist com os jogos removidos
     blacklist = load_blacklist()
     blacklist.extend([g for g in removed_games if not is_blacklisted(g, blacklist)])
+    
+    # Salva os jogos válidos e a blacklist atualizada
     save_json(SOURCE_JSON, {"downloads": valid_games})
     save_json(BLACKLIST_JSON, {"removed": blacklist})
+
 
 if __name__ == "__main__":
     print("Iniciando validação de links...", flush=True)
