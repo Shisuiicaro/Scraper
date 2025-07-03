@@ -27,7 +27,7 @@ MIN_LENGTH_RATIO_FOR_NORMAL_THRESHOLD = 0.65
 STRICT_SCORE_THRESHOLD = 96
 PRELIMINARY_SCORE_THRESHOLD = 80
 MAX_PRELIMINARY_CANDIDATES = 5
-MAX_GAMES_TO_PROCESS = 50  # Número de jogos a processar
+MAX_GAMES_TO_PROCESS = 9999999  # Número de jogos a processar
 
 BLACKLIST_KEYWORDS = ['reflection'] # Termos a serem ignorados na categorização
 
