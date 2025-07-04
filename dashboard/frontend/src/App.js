@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 
-const API_URL = 'http://localhost:5000/api';
+const API_URL = 'http://0.0.0.0:5000/api';
 
 function App() {
     const [availableScripts, setAvailableScripts] = useState([]);

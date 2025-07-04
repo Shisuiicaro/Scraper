@@ -169,4 +169,4 @@ if __name__ == '__main__':
     print(f"Scripts directory exists: {os.path.exists(SCRIPTS_DIR)}")
     if os.path.exists(SCRIPTS_DIR):
         print(f"Scripts in directory: {[f for f in os.listdir(SCRIPTS_DIR) if f.endswith('.py')]}")
-    app.run(debug=True, port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)
