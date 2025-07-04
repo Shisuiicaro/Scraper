@@ -6,3 +6,6 @@ webdriver-manager>=3.8.0
 httpx-socks>=0.8.0
 brotli>=1.0.9  # Suporte à compressão brotli
 cloudscraper>=1.2.68
+rapidfuzz
+fuzzywuzzy>=0.18.0
+tqdm>=4.62.3

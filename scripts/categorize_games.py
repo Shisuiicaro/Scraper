@@ -6,7 +6,7 @@ import sys
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import lru_cache
-from fuzzywuzzy import fuzz, process
+from rapidfuzz import fuzz, process
 from tqdm import tqdm
 from colorama import Fore, Style, init as colorama_init
 
@@ -407,15 +407,14 @@ def process_game(game_obj, adult_games_titles, adult_original_titles, software_t
         length_ratio_vr = 0.0
         
         # Stage 1: Filtro preliminar com token_sort_ratio
-        preliminary_candidates_vr = process.extract(game_title, vr_games_titles, scorer=fuzz.token_sort_ratio, limit=MAX_PRELIMINARY_CANDIDATES)
-        qualified_preliminary_candidates_vr = [(cand_title, cand_score) for cand_title, cand_score in preliminary_candidates_vr if cand_score >= PRELIMINARY_SCORE_THRESHOLD]
+        qualified_preliminary_candidates_vr = process.extract(game_title, vr_games_titles, scorer=fuzz.token_sort_ratio, limit=MAX_PRELIMINARY_CANDIDATES, score_cutoff=PRELIMINARY_SCORE_THRESHOLD)
         
         if qualified_preliminary_candidates_vr:
             # Stage 2: Matching refinado com WRatio
             best_refined_match_vr_title = None
             highest_wratio_score_vr = 0
             
-            for cand_title, _ in qualified_preliminary_candidates_vr:
+            for cand_title, _, _ in qualified_preliminary_candidates_vr:
                 game_tokens = set(game_title.lower().split())
                 cand_tokens = set(cand_title.lower().split())
                 overlap = len(game_tokens & cand_tokens) / len(game_tokens | cand_tokens) if game_tokens | cand_tokens else 0
@@ -436,14 +435,14 @@ def process_game(game_obj, adult_games_titles, adult_original_titles, software_t
             
             if is_candidate_vr and not is_original_vr:
                 if compare_base_titles_for_vr(game_title, best_match_vr):
-                    log_messages.append(f"{Fore.YELLOW}  └─ Rejeitado VR: '{best_match_vr}' (Mesmo jogo base, mas um é VR e outro não){Style.RESET_ALL}")
+                    pass # Logica de rejeição mantida, mas sem log
                 else:
-                    log_messages.append(f"{Fore.YELLOW}  └─ Rejeitado VR: '{best_match_vr}' (Jogo original não é VR){Style.RESET_ALL}")
+                    pass # Logica de rejeição mantida, mas sem log
             elif is_original_vr and not is_candidate_vr:
                 if compare_base_titles_for_vr(game_title, best_match_vr):
-                    log_messages.append(f"{Fore.YELLOW}  └─ Rejeitado VR: '{best_match_vr}' (Mesmo jogo base, mas um é VR e outro não){Style.RESET_ALL}")
+                    pass # Logica de rejeição mantida, mas sem log
                 else:
-                    log_messages.append(f"{Fore.YELLOW}  └─ Rejeitado VR: '{best_match_vr}' (Candidato não é VR mas o original é){Style.RESET_ALL}")
+                    pass # Logica de rejeição mantida, mas sem log
             elif score_vr >= FUZZY_MATCH_THRESHOLD:
                 len_game_title_val = len(game_title)
                 len_best_match_vr_val = len(best_match_vr)
@@ -468,15 +467,14 @@ def process_game(game_obj, adult_games_titles, adult_original_titles, software_t
         length_ratio_adult = 0.0
         
         # Stage 1: Filtro preliminar com token_sort_ratio
-        preliminary_candidates_adult = process.extract(game_title, adult_games_titles, scorer=fuzz.token_sort_ratio, limit=MAX_PRELIMINARY_CANDIDATES)
-        qualified_preliminary_candidates_adult = [(cand_title, cand_score) for cand_title, cand_score in preliminary_candidates_adult if cand_score >= PRELIMINARY_SCORE_THRESHOLD]
+        qualified_preliminary_candidates_adult = process.extract(game_title, adult_games_titles, scorer=fuzz.token_sort_ratio, limit=MAX_PRELIMINARY_CANDIDATES, score_cutoff=PRELIMINARY_SCORE_THRESHOLD)
         
         if qualified_preliminary_candidates_adult:
             # Stage 2: Matching refinado com WRatio
             best_refined_match_adult_title = None
             highest_wratio_score_adult = 0
             
-            for cand_title, _ in qualified_preliminary_candidates_adult:
+            for cand_title, _, _ in qualified_preliminary_candidates_adult:
                 current_wratio_score = cross_language_match(game_title, cand_title)
                 if current_wratio_score > highest_wratio_score_adult:
                     highest_wratio_score_adult = current_wratio_score
@@ -511,15 +509,14 @@ def process_game(game_obj, adult_games_titles, adult_original_titles, software_t
         length_ratio_software = 0.0
         
         # Stage 1: Filtro preliminar com token_sort_ratio
-        preliminary_candidates_software = process.extract(game_title, software_titles, scorer=fuzz.token_sort_ratio, limit=MAX_PRELIMINARY_CANDIDATES)
-        qualified_preliminary_candidates_software = [(cand_title, cand_score) for cand_title, cand_score in preliminary_candidates_software if cand_score >= PRELIMINARY_SCORE_THRESHOLD]
+        qualified_preliminary_candidates_software = process.extract(game_title, software_titles, scorer=fuzz.token_sort_ratio, limit=MAX_PRELIMINARY_CANDIDATES, score_cutoff=PRELIMINARY_SCORE_THRESHOLD)
         
         if qualified_preliminary_candidates_software:
             # Stage 2: Matching refinado com WRatio
             best_refined_match_software_title = None
             highest_wratio_score_software = 0
             
-            for cand_title, _ in qualified_preliminary_candidates_software:
+            for cand_title, _, _ in qualified_preliminary_candidates_software:
                 current_wratio_score = cross_language_match(game_title, cand_title)
                 if current_wratio_score > highest_wratio_score_software:
                     highest_wratio_score_software = current_wratio_score
@@ -552,17 +549,17 @@ def process_game(game_obj, adult_games_titles, adult_original_titles, software_t
         closest_matches = []
         
         if adult_games_titles:
-            adult_match = process.extractOne(game_title, adult_games_titles)
+            adult_match = process.extractOne(game_title, adult_games_titles, score_cutoff=FUZZY_MATCH_THRESHOLD)
             if adult_match:
                 closest_matches.append(("Adult", adult_match[0], adult_match[1]))
         
         if software_titles:
-            software_match = process.extractOne(game_title, software_titles)
+            software_match = process.extractOne(game_title, software_titles, score_cutoff=FUZZY_MATCH_THRESHOLD)
             if software_match:
                 closest_matches.append(("Software", software_match[0], software_match[1]))
         
         if vr_games_titles:
-            vr_match = process.extractOne(game_title, vr_games_titles)
+            vr_match = process.extractOne(game_title, vr_games_titles, score_cutoff=FUZZY_MATCH_THRESHOLD)
             if vr_match:
                 closest_matches.append(("VR", vr_match[0], vr_match[1]))
         
