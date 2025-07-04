@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faPlay, faStop, faEye, faTrash, faPlus, faClock, faSave, faCalendarAlt, faToggleOn, faToggleOff, faTimes } from '@fortawesome/free-solid-svg-icons';
+import { faStop, faEye, faTrash, faCalendarAlt, faToggleOn, faToggleOff } from '@fortawesome/free-solid-svg-icons';
         
 const API_URL = process.env.REACT_APP_API_URL || 'http://161.97.78.253:5000/api';
 
