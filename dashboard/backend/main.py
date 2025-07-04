@@ -8,7 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import uuid
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app, origins="*")
 
 # Use relative path to scripts directory
 SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
