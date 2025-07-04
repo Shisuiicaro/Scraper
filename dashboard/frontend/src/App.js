@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 
-const API_URL = 'http://localhost:5001/api';
+const API_URL = 'http://localhost:5000/api';
 
 function App() {
     const [availableScripts, setAvailableScripts] = useState([]);
@@ -26,8 +26,11 @@ function App() {
 
     const fetchAvailableScripts = async () => {
         try {
+            console.log('Fetching scripts from:', `${API_URL}/scripts`);
             const response = await fetch(`${API_URL}/scripts`);
-            setAvailableScripts(await response.json());
+            const data = await response.json();
+            console.log('Received scripts:', data);
+            setAvailableScripts(data);
         } catch (error) {
             console.error('Error fetching scripts:', error);
         }

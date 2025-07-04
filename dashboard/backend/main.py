@@ -10,7 +10,8 @@ import uuid
 app = Flask(__name__)
 CORS(app)
 
-SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'scripts')
+# Use relative path to scripts directory
+SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
 
 # --- State Management ---
 running_tasks = {}
@@ -85,10 +86,17 @@ def run_sequence_job(scripts, task_id):
 @app.route('/api/scripts', methods=['GET'])
 def get_scripts():
     try:
+        print(f"Looking for scripts in: {SCRIPTS_DIR}")
+        if not os.path.exists(SCRIPTS_DIR):
+            print(f"Directory does not exist: {SCRIPTS_DIR}")
+            return jsonify({'error': 'Scripts directory not found'}), 404
+        
         files = [f for f in os.listdir(SCRIPTS_DIR) if f.endswith('.py')]
+        print(f"Found scripts: {files}")
         return jsonify(sorted(files))
-    except FileNotFoundError:
-        return jsonify({'error': 'Scripts directory not found'}), 404
+    except Exception as e:
+        print(f"Error in get_scripts: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/run-task', methods=['POST'])
 def run_task():
@@ -157,4 +165,8 @@ def stop_task(task_id):
 # For simplicity, they are omitted in this refactoring but can be added back.
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5001)
+    print(f"Starting server with scripts directory: {SCRIPTS_DIR}")
+    print(f"Scripts directory exists: {os.path.exists(SCRIPTS_DIR)}")
+    if os.path.exists(SCRIPTS_DIR):
+        print(f"Scripts in directory: {[f for f in os.listdir(SCRIPTS_DIR) if f.endswith('.py')]}")
+    app.run(debug=True, port=5000)
