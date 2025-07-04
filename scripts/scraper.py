@@ -29,8 +29,9 @@ BASE_URLS = ["https://repack-games.com/category/latest-updates/"] + [
     ]
 ]
 
-JSON_FILENAME = "./data/raw/games.json"
-BLACKLIST_JSON = "./data/config/untracked.json"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+JSON_FILENAME = os.path.join(BASE_DIR, "data", "raw", "games.json")
+BLACKLIST_JSON = os.path.join(BASE_DIR, "data", "config", "untracked.json")
 MAX_GAMES = 1000000
 CONCURRENT_REQUESTS = 260  # Reduzido para evitar bloqueios
 CATEGORY_SEMAPHORE_LIMIT = 1

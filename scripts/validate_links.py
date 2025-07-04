@@ -55,10 +55,11 @@ def setup_logging():
 logger = setup_logging()
 
 # Arquivos de dados
-SOURCE_JSON = "./data/raw/filtred.json"
-BLACKLIST_JSON = "./data/config/untracked.json"
-RAW_LINKS = "./data/raw/games.json"
-INVALID_LINKS_JSON = "./data/config/invalids.json"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SOURCE_JSON = os.path.join(BASE_DIR, "data", "raw", "filtred.json")
+BLACKLIST_JSON = os.path.join(BASE_DIR, "data", "config", "untracked.json")
+RAW_LINKS = os.path.join(BASE_DIR, "data", "raw", "games.json")
+INVALID_LINKS_JSON = os.path.join(BASE_DIR, "data", "config", "invalids.json")
 
 # Regex para normalização de títulos
 REGEX_TITLE_NORMALIZATION = r"(?:\(.*?\)|\s*(Free Download|v\d+(\.\d+)*[a-zA-Z0-9\-]*|Build \d+|P2P|GOG|Repack|Edition.*|FLT|TENOKE)\s*)"

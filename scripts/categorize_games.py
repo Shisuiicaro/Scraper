@@ -357,7 +357,7 @@ def clean_title(title):
     cleaned_title = re.sub(r'\s+', ' ', base_title).strip()
     
     tokens = [token for token in cleaned_title.split() 
-              if not any(word in token.lower() for word in ['season', 'edition', 'version', 'v\d'])]
+              if not any(word in token.lower() for word in ['season', 'edition', 'version', r'v\d'])]
     core_title = ' '.join(tokens)
     
     if len(core_title) < MIN_CATEGORY_TITLE_LENGTH and len(cleaned_title) >= MIN_CATEGORY_TITLE_LENGTH:

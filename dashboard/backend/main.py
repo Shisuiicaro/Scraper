@@ -73,7 +73,8 @@ def run_script_and_wait(script_name, task_id):
             'stdout': subprocess.PIPE,
             'stderr': subprocess.PIPE,
             'text': True,
-            'bufsize': 1
+            'bufsize': 1,
+            'cwd': os.path.dirname(SCRIPTS_DIR)  # Define o diretório de trabalho como o diretório raiz do projeto
         }
         
         # Adicionar creationflags apenas no Windows
