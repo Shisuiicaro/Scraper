@@ -15,10 +15,40 @@ SCRIPTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'
 
 # --- State Management ---
 running_tasks = {}
+scheduled_tasks = {}
 
 # --- Scheduler Setup ---
 scheduler = BackgroundScheduler()
 scheduler.start()
+
+# Helper function for scheduled jobs
+def run_sequence_job(scripts, task_id=None):
+    """Run a sequence of scripts as a scheduled job"""
+    if task_id is None:
+        task_id = str(uuid.uuid4())
+        
+    # Create a new task
+    task = {
+        'id': task_id,
+        'scripts': scripts,
+        'status': 'starting',
+        'output': [],
+        'start_time': datetime.now().isoformat(),
+        'scheduled': True
+    }
+    running_tasks[task_id] = task
+    
+    # Update the last_run time for the scheduled task
+    for schedule_id, schedule_data in scheduled_tasks.items():
+        if schedule_data.get('scripts') == scripts:
+            schedule_data['last_run'] = datetime.now().isoformat()
+    
+    # Run the task in a separate thread
+    thread = Thread(target=run_script_sequence, args=(scripts, task_id))
+    thread.daemon = True
+    thread.start()
+    
+    return task_id
 
 # --- Helper Functions ---
 def stream_output(process, task_id, stream_type):
@@ -102,11 +132,13 @@ def get_scripts():
 def run_task():
     data = request.json
     scripts = data.get('scripts') # Expect a list of scripts
+    schedule_config = data.get('schedule') # Optional schedule configuration
+    
     if not scripts or not isinstance(scripts, list):
         return jsonify({'error': 'A list of script names is required'}), 400
 
     task_id = str(uuid.uuid4())
-    running_tasks[task_id] = {
+    task_data = {
         'id': task_id,
         'scripts': scripts,
         'status': 'starting',
@@ -114,11 +146,63 @@ def run_task():
         'pid': None,
         'process': None
     }
-
-    thread = threading.Thread(target=run_sequence_job, args=(scripts, task_id))
-    thread.start()
-
-    return jsonify({'message': 'Task started', 'task_id': task_id}), 200
+    
+    # Handle scheduling if provided
+    if schedule_config and schedule_config.get('enabled'):
+        schedule_id = str(uuid.uuid4())
+        frequency = schedule_config.get('frequency', 'daily')
+        time_parts = schedule_config.get('time', '12:00').split(':')
+        hour = int(time_parts[0])
+        minute = int(time_parts[1])
+        
+        # Create the scheduled task
+        scheduled_tasks[schedule_id] = {
+            'id': schedule_id,
+            'scripts': scripts,
+            'frequency': frequency,
+            'time': schedule_config.get('time'),
+            'days': schedule_config.get('days', []),
+            'enabled': True,
+            'last_run': None,
+            'next_run': None
+        }
+        
+        # Schedule the job based on frequency
+        if frequency == 'daily':
+            job = scheduler.add_job(
+                run_sequence_job,
+                'cron',
+                hour=hour,
+                minute=minute,
+                args=[scripts, task_id],
+                id=schedule_id
+            )
+            scheduled_tasks[schedule_id]['next_run'] = job.next_run_time
+        else:  # weekly with specific days
+            days_of_week = ','.join(schedule_config.get('days', []))
+            if days_of_week:
+                job = scheduler.add_job(
+                    run_sequence_job,
+                    'cron',
+                    day_of_week=days_of_week,
+                    hour=hour,
+                    minute=minute,
+                    args=[scripts, task_id],
+                    id=schedule_id
+                )
+                scheduled_tasks[schedule_id]['next_run'] = job.next_run_time
+        
+        return jsonify({
+            'message': 'Task scheduled',
+            'schedule_id': schedule_id,
+            'next_run': scheduled_tasks[schedule_id]['next_run'].isoformat() if scheduled_tasks[schedule_id]['next_run'] else None
+        }), 200
+    else:
+        # Run immediately if no schedule
+        running_tasks[task_id] = task_data
+        thread = threading.Thread(target=run_sequence_job, args=(scripts, task_id))
+        thread.start()
+        return jsonify({'message': 'Task started', 'task_id': task_id}), 200
 
 @app.route('/api/task-status', methods=['GET'])
 def get_all_task_status():
@@ -161,8 +245,123 @@ def stop_task(task_id):
             return jsonify({'error': str(e)}), 500
     return jsonify({'message': 'Task marked for stopping.'}), 200
 
-# Note: Scheduling endpoints would need to be adapted to the new task-based system.
-# For simplicity, they are omitted in this refactoring but can be added back.
+# --- Scheduling Endpoints ---
+
+@app.route('/api/schedules', methods=['GET'])
+def get_schedules():
+    """Get all scheduled tasks"""
+    schedule_list = []
+    for schedule_id, schedule_data in scheduled_tasks.items():
+        # Format next_run as ISO string if it exists
+        next_run = None
+        if schedule_data.get('next_run'):
+            next_run = schedule_data['next_run'].isoformat()
+            
+        schedule_list.append({
+            'id': schedule_id,
+            'scripts': schedule_data['scripts'],
+            'frequency': schedule_data['frequency'],
+            'time': schedule_data['time'],
+            'days': schedule_data['days'],
+            'enabled': schedule_data['enabled'],
+            'last_run': schedule_data['last_run'],
+            'next_run': next_run
+        })
+    return jsonify(schedule_list)
+
+@app.route('/api/schedules/<schedule_id>', methods=['GET'])
+def get_schedule(schedule_id):
+    """Get a specific scheduled task"""
+    if schedule_id not in scheduled_tasks:
+        return jsonify({'error': 'Schedule not found'}), 404
+        
+    schedule_data = scheduled_tasks[schedule_id]
+    # Format next_run as ISO string if it exists
+    next_run = None
+    if schedule_data.get('next_run'):
+        next_run = schedule_data['next_run'].isoformat()
+        
+    return jsonify({
+        'id': schedule_id,
+        'scripts': schedule_data['scripts'],
+        'frequency': schedule_data['frequency'],
+        'time': schedule_data['time'],
+        'days': schedule_data['days'],
+        'enabled': schedule_data['enabled'],
+        'last_run': schedule_data['last_run'],
+        'next_run': next_run
+    })
+
+@app.route('/api/schedules/<schedule_id>', methods=['DELETE'])
+def delete_schedule(schedule_id):
+    """Delete a scheduled task"""
+    if schedule_id not in scheduled_tasks:
+        return jsonify({'error': 'Schedule not found'}), 404
+        
+    try:
+        # Remove from scheduler
+        scheduler.remove_job(schedule_id)
+        # Remove from our tracking
+        del scheduled_tasks[schedule_id]
+        return jsonify({'message': f'Schedule {schedule_id} deleted.'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/schedules/<schedule_id>/toggle', methods=['POST'])
+def toggle_schedule(schedule_id):
+    """Enable or disable a scheduled task"""
+    if schedule_id not in scheduled_tasks:
+        return jsonify({'error': 'Schedule not found'}), 404
+        
+    try:
+        current_state = scheduled_tasks[schedule_id]['enabled']
+        new_state = not current_state
+        scheduled_tasks[schedule_id]['enabled'] = new_state
+        
+        # Pause or resume in the scheduler
+        if new_state:
+            # Re-add the job if it was disabled
+            schedule_data = scheduled_tasks[schedule_id]
+            time_parts = schedule_data['time'].split(':')
+            hour = int(time_parts[0])
+            minute = int(time_parts[1])
+            
+            if schedule_data['frequency'] == 'daily':
+                job = scheduler.add_job(
+                    run_sequence_job,
+                    'cron',
+                    hour=hour,
+                    minute=minute,
+                    args=[schedule_data['scripts'], str(uuid.uuid4())],
+                    id=schedule_id,
+                    replace_existing=True
+                )
+            else:  # weekly
+                days_of_week = ','.join(schedule_data['days'])
+                if days_of_week:
+                    job = scheduler.add_job(
+                        run_sequence_job,
+                        'cron',
+                        day_of_week=days_of_week,
+                        hour=hour,
+                        minute=minute,
+                        args=[schedule_data['scripts'], str(uuid.uuid4())],
+                        id=schedule_id,
+                        replace_existing=True
+                    )
+            
+            scheduled_tasks[schedule_id]['next_run'] = job.next_run_time
+        else:
+            # Remove the job if it's being disabled
+            scheduler.remove_job(schedule_id)
+            scheduled_tasks[schedule_id]['next_run'] = None
+            
+        return jsonify({
+            'message': f'Schedule {schedule_id} is now {"enabled" if new_state else "disabled"}.',
+            'enabled': new_state
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     print(f"Starting server with scripts directory: {SCRIPTS_DIR}")

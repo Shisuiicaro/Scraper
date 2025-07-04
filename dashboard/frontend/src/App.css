@@ -6,9 +6,18 @@
     --accent-color: #00aaff;
     --accent-hover: #0088cc;
     --success-color: #4caf50;
+    --warning-color: #ff9800;
     --error-color: #f44336;
+    --info-color: #2196f3;
     --running-color: #ff9800;
     --font-family: 'Segoe UI', 'Roboto', sans-serif;
+    --shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    --border-radius: 8px;
+    --primary-color: #4a90e2;
+    --secondary-color: #5cb85c;
+    --danger-color: #d9534f;
+    --card-bg: #ffffff;
+    --border-color: #e1e4e8;
 }
 
 body {
@@ -44,10 +53,10 @@ body {
 
 .card {
     background-color: var(--secondary-bg);
-    border-radius: 8px;
+    border-radius: var(--border-radius);
     padding: 1.5rem;
     width: 100%;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--shadow);
     border: 1px solid var(--tertiary-bg);
 }
 
@@ -68,19 +77,50 @@ button {
     cursor: pointer;
     font-size: 0.9rem;
     font-weight: bold;
-    transition: background-color 0.2s ease, transform 0.2s ease;
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
 }
 
 button:hover {
     background-color: var(--accent-hover);
     transform: translateY(-2px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 button:disabled {
     background-color: #555;
     cursor: not-allowed;
     transform: none;
+    opacity: 0.7;
+    box-shadow: none;
 }
+
+/* Notification styles */
+.notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 12px 20px;
+    border-radius: var(--border-radius);
+    color: white;
+    box-shadow: var(--shadow);
+    z-index: 1000;
+    max-width: 400px;
+    animation: slideIn 0.3s ease-out forwards;
+}
+
+@keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+.notification.success { background-color: var(--success-color); }
+.notification.error { background-color: var(--error-color); }
+.notification.warning { background-color: var(--warning-color); }
+.notification.info { background-color: var(--info-color); }
 
 .control-panel {
     display: grid;
@@ -109,9 +149,31 @@ button:disabled {
     justify-content: space-between;
     align-items: center;
     background-color: var(--tertiary-bg);
-    padding: 0.5rem 1rem;
+    padding: 0.8rem 1rem;
     border-radius: 4px;
-    margin-bottom: 0.5rem;
+    margin-bottom: 0.8rem;
+    transition: all 0.2s ease;
+}
+
+.sequence-display li:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow);
+}
+
+.sequence-list {
+    max-height: 300px;
+    overflow-y: auto;
+    margin-bottom: 1rem;
+    padding-right: 0.5rem;
+}
+
+.empty-message {
+    color: #888;
+    font-style: italic;
+    text-align: center;
+    padding: 1rem;
+    background-color: var(--tertiary-bg);
+    border-radius: 4px;
 }
 
 .remove-btn {
@@ -121,16 +183,48 @@ button:disabled {
     font-size: 1.2rem;
     font-weight: bold;
     padding: 0 0.5rem;
+    transition: all 0.2s ease;
+}
+
+.remove-btn:hover {
+    color: #ff6b6b;
+    background: none;
+    transform: scale(1.2);
+    box-shadow: none;
+}
+
+.sequence-actions {
+    display: flex;
+    gap: 1rem;
+    margin-top: 1rem;
 }
 
 .run-btn {
-    width: 100%;
+    flex: 3;
     padding: 0.8rem;
-    margin-top: 1rem;
     font-size: 1.1rem;
+    background-color: var(--success-color);
 }
 
-.task-monitor ul, .sequence-display ul {
+.run-btn:hover {
+    background-color: #3d8b40;
+}
+
+.schedule-btn {
+    flex: 1;
+    background-color: var(--tertiary-bg);
+}
+
+.schedule-btn.scheduled {
+    background-color: var(--warning-color);
+}
+
+.schedule-btn:hover {
+    background-color: var(--tertiary-bg);
+    filter: brightness(1.2);
+}
+
+.task-monitor ul, .sequence-display ul, .schedules-list {
     list-style-type: none;
     padding: 0;
 }
@@ -172,6 +266,25 @@ button:disabled {
     text-align: left;
 }
 
+.output-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.output-header .status {
+    font-weight: bold;
+    padding: 0.3rem 0.8rem;
+    border-radius: 20px;
+    font-size: 0.9rem;
+}
+
+.output-header .status.running { background-color: var(--running-color); }
+.output-header .status.finished { background-color: var(--success-color); }
+.output-header .status.error { background-color: var(--error-color); }
+.output-header .status.stopped { background-color: #888; }
+
 .output-log {
     background-color: var(--primary-bg);
     color: #f1f1f1;
@@ -184,11 +297,214 @@ button:disabled {
     font-family: 'Courier New', Courier, monospace;
     font-size: 0.9rem;
     border: 1px solid var(--tertiary-bg);
+    line-height: 1.5;
 }
 
 .close-btn {
     margin-top: 1rem;
     background-color: var(--tertiary-bg);
+}
+
+/* Modal styles */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.modal {
+    background-color: var(--secondary-bg);
+    border-radius: var(--border-radius);
+    width: 90%;
+    max-width: 500px;
+    box-shadow: var(--shadow);
+    animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid var(--tertiary-bg);
+}
+
+.modal-header h2 {
+    margin: 0;
+    border: none;
+}
+
+.modal-header .close-btn {
+    margin: 0;
+    padding: 0.3rem 0.6rem;
+    font-size: 1.2rem;
+}
+
+.modal-body {
+    padding: 1.5rem;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.modal-footer {
+    padding: 1rem 1.5rem;
+    display: flex;
+    justify-content: flex-end;
+    gap: 1rem;
+    border-top: 1px solid var(--tertiary-bg);
+}
+
+.form-group {
+    margin-bottom: 1.5rem;
+    text-align: left;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: bold;
+}
+
+.form-group input[type="checkbox"] {
+    margin-right: 0.5rem;
+}
+
+.form-group select, .form-group input[type="time"] {
+    width: 100%;
+    padding: 0.6rem;
+    background-color: var(--tertiary-bg);
+    border: 1px solid var(--tertiary-bg);
+    border-radius: 4px;
+    color: var(--primary-text);
+    font-size: 1rem;
+}
+
+.days-select {
+    height: 150px;
+}
+
+.form-group small {
+    display: block;
+    margin-top: 0.5rem;
+}
+
+/* Schedules Panel Styles */
+.schedules-panel {
+    margin-top: 2rem;
+}
+
+.schedules-header {
+    cursor: pointer;
+}
+
+.schedules-header h2 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.toggle-icon {
+    font-size: 0.8rem;
+    margin-left: 0.5rem;
+}
+
+.schedules-content {
+    margin-top: 1rem;
+}
+
+.schedule-item {
+    background-color: var(--tertiary-bg);
+    border-radius: var(--border-radius);
+    padding: 1.2rem;
+    margin-bottom: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    border-left: 5px solid;
+    transition: all 0.2s ease;
+}
+
+.schedule-item:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow);
+}
+
+.schedule-item.enabled {
+    border-color: var(--success-color);
+}
+
+.schedule-item.disabled {
+    border-color: #888;
+    opacity: 0.8;
+}
+
+.schedule-info h3 {
+    margin-top: 0;
+    margin-bottom: 0.8rem;
+    color: var(--accent-color);
+    font-size: 1.1rem;
+}
+
+.schedule-info p {
+    margin: 0.5rem 0;
+}
+
+.schedule-days {
+    margin-left: 0.5rem;
+    background-color: var(--tertiary-bg);
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.9rem;
+}
+
+.schedule-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 1rem;
+    margin-top: 0.5rem;
+}
+
+.toggle-btn {
+    background-color: var(--tertiary-bg);
+}
+
+.toggle-btn.enabled {
+    background-color: var(--success-color);
+}
+
+.toggle-btn:hover {
+    filter: brightness(1.2);
+}
+
+.delete-btn {
+    background-color: var(--error-color);
+}
+
+.delete-btn:hover {
+    background-color: #d32f2f;
+}
+    color: #888;
+    font-size: 0.8rem;
+}
+
+.cancel-btn {
+    background-color: var(--tertiary-bg);
+}
+
+.save-btn {
+    background-color: var(--success-color);
 }
 
 @media (max-width: 768px) {
