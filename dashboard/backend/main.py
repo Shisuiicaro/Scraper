@@ -1,7 +1,9 @@
 import os
 import subprocess
 import threading
+from threading import Thread
 import time
+from datetime import datetime
 from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -44,7 +46,7 @@ def run_sequence_job(scripts, task_id=None):
             schedule_data['last_run'] = datetime.now().isoformat()
     
     # Run the task in a separate thread
-    thread = Thread(target=run_script_sequence, args=(scripts, task_id))
+    thread = Thread(target=execute_script_sequence, args=(scripts, task_id))
     thread.daemon = True
     thread.start()
     
@@ -66,13 +68,21 @@ def run_script_and_wait(script_name, task_id):
         return
 
     try:
+        # Configurar os argumentos do Popen com base no sistema operacional
+        popen_args = {
+            'stdout': subprocess.PIPE,
+            'stderr': subprocess.PIPE,
+            'text': True,
+            'bufsize': 1
+        }
+        
+        # Adicionar creationflags apenas no Windows
+        if os.name == 'nt':  # Windows
+            popen_args['creationflags'] = subprocess.CREATE_NO_WINDOW
+            
         process = subprocess.Popen(
-            ['python', '-u', script_path], 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE, 
-            text=True, 
-            bufsize=1,
-            creationflags=subprocess.CREATE_NO_WINDOW
+            ['python', '-u', script_path],
+            **popen_args
         )
         running_tasks[task_id]['process'] = process
         running_tasks[task_id]['pid'] = process.pid
@@ -95,7 +105,7 @@ def run_script_and_wait(script_name, task_id):
             running_tasks[task_id]['status'] = 'error'
             running_tasks[task_id]['output'].append(f"Failed to run script '{script_name}': {e}")
 
-def run_sequence_job(scripts, task_id):
+def execute_script_sequence(scripts, task_id):
     running_tasks[task_id]['status'] = 'running'
     for i, script_name in enumerate(scripts):
         if task_id not in running_tasks or running_tasks[task_id].get('stopped'):
@@ -200,7 +210,7 @@ def run_task():
     else:
         # Run immediately if no schedule
         running_tasks[task_id] = task_data
-        thread = threading.Thread(target=run_sequence_job, args=(scripts, task_id))
+        thread = threading.Thread(target=execute_script_sequence, args=(scripts, task_id))
         thread.start()
         return jsonify({'message': 'Task started', 'task_id': task_id}), 200
 
