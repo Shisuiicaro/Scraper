@@ -53,10 +53,16 @@ def run_sequence_job(scripts, task_id=None):
     return task_id
 
 # --- Helper Functions ---
+# Modificar a função stream_output para processar e estruturar melhor os logs
 def stream_output(process, task_id, stream_type):
     stream = process.stdout if stream_type == 'stdout' else process.stderr
     for line in iter(stream.readline, ''):
         if task_id in running_tasks:
+            # Processar a linha para extrair informações estruturadas
+            if '[NEW GAME]' in line or '[NO LINKS]' in line or '[IGNORED]' in line:
+                # Adicionar timestamp para melhor rastreamento
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                line = f"[{timestamp}] {line}"
             running_tasks[task_id]['output'].append(line)
     stream.close()
 
@@ -227,18 +233,36 @@ def get_all_task_status():
         })
     return jsonify(status_list)
 
-@app.route('/api/task-status/<task_id>', methods=['GET'])
-def get_task_status(task_id):
+@app.route('/api/task-stats/<task_id>', methods=['GET'])
+def get_task_stats(task_id):
     if task_id not in running_tasks:
         return jsonify({'error': 'Task not found'}), 404
     
     task = running_tasks[task_id]
-    return jsonify({
-        'id': task_id,
-        'scripts': task['scripts'],
-        'status': task['status'],
-        'output': task['output']
-    })
+    output = task.get('output', [])
+    
+    # Analisar logs para extrair estatísticas
+    stats = {
+        'new_games': len([line for line in output if '[NEW GAME]' in line]),
+        'no_links': len([line for line in output if '[NO LINKS]' in line]),
+        'ignored': len([line for line in output if '[IGNORED]' in line]),
+        'total_processed': 0,
+        'categories': {}
+    }
+    
+    stats['total_processed'] = stats['new_games'] + stats['no_links'] + stats['ignored']
+    
+    # Extrair informações de categorias
+    for line in output:
+        if 'Categoria:' in line:
+            category_match = re.search(r'Categoria:\s+([^\|]+)', line)
+            if category_match:
+                category = category_match.group(1).strip()
+                if category not in stats['categories']:
+                    stats['categories'][category] = 0
+                stats['categories'][category] += 1
+    
+    return jsonify(stats)
 
 @app.route('/api/stop-task/<task_id>', methods=['POST'])
 def stop_task(task_id):

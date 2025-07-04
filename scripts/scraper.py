@@ -86,20 +86,23 @@ def parse_relative_date(date_str):
     except Exception:
         return now.isoformat()
 
-def log_game_status(status, page, game_title):
+# Modificar a função log_game_status para exibir mais informações
+def log_game_status(status, page, game_title, category=""):
     global processed_games_count, stats
     if status == "NEW":
         processed_games_count += 1
         stats["new_games"] += 1
-        print(f"{Fore.GREEN}[NEW GAME] {Style.BRIGHT}Page {page}{Style.RESET_ALL}: {game_title}")
+        print(f"{Fore.GREEN}[NEW GAME] {Style.BRIGHT}Categoria: {category} | Página {page}{Style.RESET_ALL}: {game_title}")
     elif status == "NO_LINKS":
         stats["no_links"] += 1
-        print(f"{Fore.RED}[NO LINKS] {Style.BRIGHT}Page {page}{Style.RESET_ALL}: {game_title}")
+        print(f"{Fore.RED}[NO LINKS] {Style.BRIGHT}Categoria: {category} | Página {page}{Style.RESET_ALL}: {game_title}")
     elif status == "IGNORED":
         stats["ignored"] += 1
+        print(f"{Fore.YELLOW}[IGNORED] {Style.BRIGHT}Categoria: {category} | Página {page}{Style.RESET_ALL}: {game_title}")
 
+# Adicionar ao print_stats para mostrar o total de jogos processados
 def print_stats(clear_screen=True):
-    global start_time, stats
+    global start_time, stats, processed_games_count
     elapsed_time = time.time() - start_time
     hours, remainder = divmod(elapsed_time, 3600)
     minutes, seconds = divmod(remainder, 60)
@@ -113,10 +116,11 @@ def print_stats(clear_screen=True):
     print(f"{Fore.RED}Jogos sem links: {stats['no_links']}")
     print(f"{Fore.CYAN}Jogos ignorados: {stats['ignored']}")
     print(f"{Fore.MAGENTA}Categorias processadas: {stats['categories_processed']}/{len(BASE_URLS)}")
+    print(f"{Fore.WHITE}Total de jogos processados: {processed_games_count}")
     
     # Calcular taxa de processamento
     if elapsed_time > 0:
-        games_per_hour = (stats['new_games'] + stats['no_links']) / (elapsed_time / 3600)
+        games_per_hour = (stats['new_games'] + stats['no_links'] + stats['ignored']) / (elapsed_time / 3600)
         print(f"{Fore.WHITE}Taxa: {games_per_hour:.1f} jogos/hora")
         
     print(f"{Style.BRIGHT}{Fore.CYAN}====================={Style.RESET_ALL}\n")
@@ -367,7 +371,19 @@ async def process_category(scraper, base_url, data, page_semaphore, game_semapho
         print(f"\n{Fore.CYAN}Processando categoria: {Style.BRIGHT}{category}{Style.RESET_ALL}")
         print(f"Total de páginas: {len(pages)} de {last_page_num}\n")
         
-        progress_bar = tqdm(total=len(pages), desc=f"Páginas de {category}", unit="página", ncols=100, bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]") 
+        # Modificar a configuração da barra de progresso para exibir mais informações
+        # Usar tqdm.auto para melhor compatibilidade com diferentes ambientes
+        
+        # Na função process_category, substituir a barra de progresso atual por:
+        progress_bar = tqdm(
+        total=len(pages),
+        desc=f"Páginas de {category}",
+        unit="página",
+        ncols=100,
+        bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+        position=0,
+        leave=True
+        )
         
         # Processar páginas em lotes menores com pausa entre lotes
         for i in range(0, len(pages), PAGE_SEMAPHORE_LIMIT):
