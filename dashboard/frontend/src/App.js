@@ -1,139 +1,165 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 
 const API_URL = 'http://localhost:5001/api';
 
 function App() {
-    const [scripts, setScripts] = useState([]);
-    const [scheduledJobs, setScheduledJobs] = useState([]);
-    const [selectedScript, setSelectedScript] = useState('');
-    const [cron, setCron] = useState({ minute: '*', hour: '*', day: '*', month: '*', day_of_week: '*' });
+    const [availableScripts, setAvailableScripts] = useState([]);
+    const [selectedScripts, setSelectedScripts] = useState([]);
+    const [runningTasks, setRunningTasks] = useState([]);
+    const [activeTaskDetail, setActiveTaskDetail] = useState(null);
+    const outputRef = useRef(null);
 
+    // Fetch initial data
     useEffect(() => {
-        fetchScripts();
-        fetchScheduledJobs();
-        const interval = setInterval(() => {
-            fetchScheduledJobs();
-        }, 5000); // Refresh jobs every 5 seconds
+        fetchAvailableScripts();
+        const interval = setInterval(fetchRunningTasks, 2000); // Poll for task status
         return () => clearInterval(interval);
     }, []);
 
-    const fetchScripts = async () => {
+    // Scroll to bottom of output
+    useEffect(() => {
+        if (outputRef.current) {
+            outputRef.current.scrollTop = outputRef.current.scrollHeight;
+        }
+    }, [activeTaskDetail]);
+
+    const fetchAvailableScripts = async () => {
         try {
             const response = await fetch(`${API_URL}/scripts`);
-            const data = await response.json();
-            setScripts(data);
-            if (data.length > 0) {
-                setSelectedScript(data[0]);
-            }
+            setAvailableScripts(await response.json());
         } catch (error) {
             console.error('Error fetching scripts:', error);
         }
     };
 
-    const fetchScheduledJobs = async () => {
+    const fetchRunningTasks = async () => {
         try {
-            const response = await fetch(`${API_URL}/scheduled-jobs`);
+            const response = await fetch(`${API_URL}/task-status`);
+            setRunningTasks(await response.json());
+        } catch (error) {
+            console.error('Error fetching tasks:', error);
+        }
+    };
+
+    const fetchTaskDetail = async (taskId) => {
+        try {
+            const response = await fetch(`${API_URL}/task-status/${taskId}`);
             const data = await response.json();
-            setScheduledJobs(data);
+            setActiveTaskDetail(data);
+            // Keep polling for the active task details
+            if (data.status === 'running' || data.status === 'starting') {
+                setTimeout(() => fetchTaskDetail(taskId), 1000);
+            }
         } catch (error) {
-            console.error('Error fetching scheduled jobs:', error);
+            console.error('Error fetching task details:', error);
         }
     };
 
-    const handleRunScript = async () => {
-        if (!selectedScript) return;
+    const handleScriptSelection = (script) => {
+        setSelectedScripts(prev => [...prev, script]);
+    };
+
+    const handleRemoveScript = (index) => {
+        setSelectedScripts(prev => prev.filter((_, i) => i !== index));
+    };
+
+    const handleRunSequence = async () => {
+        if (selectedScripts.length === 0) return;
         try {
-            await fetch(`${API_URL}/run-script`, {
+            const response = await fetch(`${API_URL}/run-task`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ script: selectedScript }),
+                body: JSON.stringify({ scripts: selectedScripts }),
             });
-            alert(`Script ${selectedScript} started!`);
+            const data = await response.json();
+            fetchTaskDetail(data.task_id);
+            setSelectedScripts([]); // Clear selection after running
         } catch (error) {
-            console.error('Error running script:', error);
+            console.error('Error running task sequence:', error);
         }
     };
 
-    const handleScheduleScript = async () => {
-        if (!selectedScript) return;
+    const handleStopTask = async (taskId) => {
         try {
-            const cronString = `${cron.minute} ${cron.hour} ${cron.day} ${cron.month} ${cron.day_of_week}`;
-            await fetch(`${API_URL}/schedule-script`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ script: selectedScript, cron: cron }),
-            });
-            alert(`Script ${selectedScript} scheduled with cron: ${cronString}`);
-            fetchScheduledJobs();
+            await fetch(`${API_URL}/stop-task/${taskId}`, { method: 'POST' });
+            fetchRunningTasks(); // Refresh list
         } catch (error) {
-            console.error('Error scheduling script:', error);
+            console.error('Error stopping task:', error);
         }
     };
 
-    const handleCancelJob = async (jobId) => {
-        try {
-            await fetch(`${API_URL}/cancel-job`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ job_id: jobId }),
-            });
-            alert(`Job ${jobId} cancelled!`);
-            fetchScheduledJobs();
-        } catch (error) {
-            console.error('Error cancelling job:', error);
-        }
-    };
-
-    const handleCronChange = (e) => {
-        const { name, value } = e.target;
-        setCron(prev => ({ ...prev, [name]: value }));
+    const handleViewTask = (taskId) => {
+        fetchTaskDetail(taskId);
     };
 
     return (
         <div className="App">
             <header className="App-header">
-                <h1>Workspace Control Panel</h1>
+                <h1>Script Automation Dashboard</h1>
             </header>
             <main className="container">
-                <div className="card">
-                    <h2>Run Script Manually</h2>
-                    <select value={selectedScript} onChange={(e) => setSelectedScript(e.target.value)}>
-                        {scripts.map(script => (
-                            <option key={script} value={script}>{script}</option>
-                        ))}
-                    </select>
-                    <button onClick={handleRunScript}>Run Script</button>
-                </div>
-
-                <div className="card">
-                    <h2>Schedule Script (Cron)</h2>
-                    <select value={selectedScript} onChange={(e) => setSelectedScript(e.target.value)}>
-                        {scripts.map(script => (
-                            <option key={script} value={script}>{script}</option>
-                        ))}
-                    </select>
-                    <div className="cron-inputs">
-                        <input type="text" name="minute" value={cron.minute} onChange={handleCronChange} placeholder="Minute" />
-                        <input type="text" name="hour" value={cron.hour} onChange={handleCronChange} placeholder="Hour" />
-                        <input type="text" name="day" value={cron.day} onChange={handleCronChange} placeholder="Day" />
-                        <input type="text" name="month" value={cron.month} onChange={handleCronChange} placeholder="Month" />
-                        <input type="text" name="day_of_week" value={cron.day_of_week} onChange={handleCronChange} placeholder="Day of Week" />
+                <div className="control-panel">
+                    <div className="card script-selector">
+                        <h2>Build a Sequence</h2>
+                        <p>Select scripts from the list to add them to the execution sequence.</p>
+                        <div className="script-list">
+                            {availableScripts.map(script => (
+                                <button key={script} onClick={() => handleScriptSelection(script)} className="script-item">
+                                    {script}
+                                </button>
+                            ))}
+                        </div>
                     </div>
-                    <button onClick={handleScheduleScript}>Schedule Script</button>
+
+                    <div className="card sequence-display">
+                        <h2>Execution Sequence</h2>
+                        {selectedScripts.length === 0 ? (
+                            <p>No scripts selected.</p>
+                        ) : (
+                            <ol>
+                                {selectedScripts.map((script, index) => (
+                                    <li key={index}>
+                                        <span>{script}</span>
+                                        <button onClick={() => handleRemoveScript(index)} className="remove-btn">×</button>
+                                    </li>
+                                ))}
+                            </ol>
+                        )}
+                        <button onClick={handleRunSequence} disabled={selectedScripts.length === 0} className="run-btn">
+                            Run Sequence
+                        </button>
+                    </div>
                 </div>
 
-                <div className="card">
-                    <h2>Scheduled Jobs</h2>
+                <div className="card task-monitor">
+                    <h2>Active & Recent Tasks</h2>
                     <ul>
-                        {scheduledJobs.map(job => (
-                            <li key={job.id}>
-                                <span>{job.id} - Next run: {new Date(job.next_run_time).toLocaleString()}</span>
-                                <button onClick={() => handleCancelJob(job.id)}>Cancel</button>
+                        {runningTasks.map(task => (
+                            <li key={task.id} className={`task-item-status ${task.status}`}>
+                                <span><strong>ID:</strong> {task.id.substring(0, 8)}...</span>
+                                <span><strong>Scripts:</strong> {task.scripts.join(', ')}</span>
+                                <span className="status">{task.status}</span>
+                                <div>
+                                    <button onClick={() => handleViewTask(task.id)}>View</button>
+                                    {task.status === 'running' && 
+                                        <button onClick={() => handleStopTask(task.id)} className="stop-btn">Stop</button>
+                                    }
+                                </div>
                             </li>
                         ))}
                     </ul>
                 </div>
+
+                {activeTaskDetail && (
+                    <div className="card output-viewer">
+                        <h2>Task Output: {activeTaskDetail.id.substring(0, 8)}... ({activeTaskDetail.status})</h2>
+                        <pre ref={outputRef} className="output-log">
+                            {activeTaskDetail.output.join('')}
+                        </pre>
+                        <button onClick={() => setActiveTaskDetail(null)} className="close-btn">Close</button>
+                    </div>
+                )}
             </main>
         </div>
     );
