@@ -55,9 +55,9 @@ def run_sequence_job(scripts, task_id=None):
 # --- Helper Functions ---
 def stream_output(process, task_id, stream_type):
     stream = process.stdout if stream_type == 'stdout' else process.stderr
-    for line in iter(stream.readline, ''):
+    for line in iter(stream.readline, b''):
         if task_id in running_tasks:
-            running_tasks[task_id]['output'].append(line)
+            running_tasks[task_id]['output'].append(line.decode('utf-8', errors='ignore'))
     stream.close()
 
 def run_script_and_wait(script_name, task_id):
@@ -72,7 +72,6 @@ def run_script_and_wait(script_name, task_id):
         popen_args = {
             'stdout': subprocess.PIPE,
             'stderr': subprocess.PIPE,
-            'text': True,
             'bufsize': 1,
             'cwd': os.path.dirname(SCRIPTS_DIR)  # Define o diretório de trabalho como o diretório raiz do projeto
         }

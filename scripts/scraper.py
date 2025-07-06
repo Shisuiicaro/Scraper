@@ -16,7 +16,7 @@ from tqdm import tqdm
 # 3. Uso de lock para proteger o acesso concorrente a existing_links e data
 # 4. Proteção com lock ao salvar dados periodicamente
 
-init(autoreset=True)
+init(autoreset=True, strip=False)
 
 BASE_URLS = ["https://repack-games.com/category/latest-updates/"] + [
     "https://repack-games.com/category/" + url for url in [

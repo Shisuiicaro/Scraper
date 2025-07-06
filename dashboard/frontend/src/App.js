@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faStop, faEye, faTrash, faCalendarAlt, faToggleOn, faToggleOff } from '@fortawesome/free-solid-svg-icons';
+import { faStop, faEye, faTrash, faCalendarAlt, faToggleOn, faToggleOff, faExpand, faCompress } from '@fortawesome/free-solid-svg-icons';
         
 const API_URL = process.env.REACT_APP_API_URL || 'http://161.97.78.253:5000/api';
 
@@ -20,6 +20,7 @@ function App() {
     const [notification, setNotification] = useState(null);
     const [scheduledTasks, setScheduledTasks] = useState([]);
     const [schedulesVisible, setSchedulesVisible] = useState(false);
+    const [isLogsFullscreen, setIsLogsFullscreen] = useState(false);
     const outputRef = useRef(null);
 
     // Fetch initial data
@@ -45,6 +46,20 @@ function App() {
             outputRef.current.scrollTop = outputRef.current.scrollHeight;
         }
     }, [activeTaskDetail]);
+
+    // Handle escape key to exit fullscreen
+    useEffect(() => {
+        const handleEscKey = (event) => {
+            if (event.key === 'Escape' && isLogsFullscreen) {
+                setIsLogsFullscreen(false);
+            }
+        };
+
+        document.addEventListener('keydown', handleEscKey);
+        return () => {
+            document.removeEventListener('keydown', handleEscKey);
+        };
+    }, [isLogsFullscreen]);
 
     const fetchAvailableScripts = async () => {
         try {
@@ -267,6 +282,104 @@ function App() {
         }
     };
 
+    // Function to toggle fullscreen mode for logs
+    const toggleLogsFullscreen = () => {
+        setIsLogsFullscreen(!isLogsFullscreen);
+    };
+
+    // Function to process ANSI color codes in logs
+    const processAnsiCodes = (text) => {
+        if (!text) return '';
+        
+        // Define the escape character (ASCII 27 / 0x1B / ESC)
+        const ESC = String.fromCharCode(27);
+        
+        // Map of ANSI color codes to HTML span classes
+        const colorClasses = {
+            '30': 'ansi-black',
+            '31': 'ansi-red',
+            '32': 'ansi-green',
+            '33': 'ansi-yellow',
+            '34': 'ansi-blue',
+            '35': 'ansi-magenta',
+            '36': 'ansi-cyan',
+            '37': 'ansi-white',
+            '90': 'ansi-bright-black',
+            '91': 'ansi-bright-red',
+            '92': 'ansi-bright-green',
+            '93': 'ansi-bright-yellow',
+            '94': 'ansi-bright-blue',
+            '95': 'ansi-bright-magenta',
+            '96': 'ansi-bright-cyan',
+            '97': 'ansi-bright-white',
+            '1': 'ansi-bold',
+            '3': 'ansi-italic',
+            '4': 'ansi-underline'
+        };
+        
+        let result = '';
+        let i = 0;
+        let openSpans = 0;
+        
+        while (i < text.length) {
+            // Look for the ESC character
+            if (text[i] === ESC && i+1 < text.length && text[i+1] === '[') {
+                // Found an ANSI escape sequence
+                let code = '';
+                i += 2; // Skip ESC and [
+                
+                // Read the code number
+                while (i < text.length && text[i] !== 'm') {
+                    code += text[i];
+                    i++;
+                }
+                i++; // Skip 'm'
+                
+                // Process the code
+                if (code === '0') {
+                    // Reset all formatting
+                    while (openSpans > 0) {
+                        result += '</span>';
+                        openSpans--;
+                    }
+                } else if (colorClasses[code]) {
+                    result += `<span class="${colorClasses[code]}">`;
+                    openSpans++;
+                } else if (code.includes(';')) {
+                    // Handle multiple codes like ESC[1;31m (bold and red)
+                    const subCodes = code.split(';');
+                    for (const subCode of subCodes) {
+                        if (colorClasses[subCode]) {
+                            result += `<span class="${colorClasses[subCode]}">`;
+                            openSpans++;
+                        }
+                    }
+                }
+            } else {
+                // Regular character
+                result += text[i];
+                i++;
+            }
+        }
+        
+        // Close any remaining open spans
+        while (openSpans > 0) {
+            result += '</span>';
+            openSpans--;
+        }
+        
+        return result;
+    };
+
+    // Function to render logs with processed ANSI codes
+    const renderLogs = () => {
+        if (!activeTaskDetail || !activeTaskDetail.output) return null;
+        
+        return activeTaskDetail.output.map((line, index) => (
+            <div key={index} dangerouslySetInnerHTML={{ __html: processAnsiCodes(line) }} />
+        ));
+    };
+
     return (
         <div className="App">
             <header className="App-header">
@@ -435,20 +548,32 @@ function App() {
                 </div>
 
                 {activeTaskDetail && (
-                    <div className="card output-viewer">
+                    <div className={`card output-viewer ${isLogsFullscreen ? 'fullscreen' : ''}`}>
                         <div className="output-header">
                             <h2>Logs da Tarefa: {activeTaskDetail.id.substring(0, 8)}...</h2>
-                            <span className={`status ${activeTaskDetail.status}`}>
-                                {activeTaskDetail.status === 'running' ? 'Em execução' : 
-                                 activeTaskDetail.status === 'finished' ? 'Concluída' : 
-                                 activeTaskDetail.status === 'error' ? 'Erro' : 
-                                 activeTaskDetail.status === 'stopped' ? 'Interrompida' : activeTaskDetail.status}
-                            </span>
+                            <div className="output-header-actions">
+                                <span className={`status ${activeTaskDetail.status}`}>
+                                    {activeTaskDetail.status === 'running' ? 'Em execução' : 
+                                     activeTaskDetail.status === 'finished' ? 'Concluída' : 
+                                     activeTaskDetail.status === 'error' ? 'Erro' : 
+                                     activeTaskDetail.status === 'stopped' ? 'Interrompida' : activeTaskDetail.status}
+                                </span>
+                                <button 
+                                    onClick={toggleLogsFullscreen} 
+                                    className="fullscreen-btn" 
+                                    title={isLogsFullscreen ? "Sair da tela cheia" : "Ver em tela cheia"}
+                                >
+                                    <FontAwesomeIcon icon={isLogsFullscreen ? faCompress : faExpand} />
+                                </button>
+                            </div>
                         </div>
                         <pre ref={outputRef} className="output-log">
-                            {activeTaskDetail.output.join('')}
+                            {renderLogs()}
                         </pre>
-                        <button onClick={() => setActiveTaskDetail(null)} className="close-btn">Fechar</button>
+                        <button onClick={() => {
+                            setActiveTaskDetail(null);
+                            setIsLogsFullscreen(false);
+                        }} className="close-btn">Fechar</button>
                     </div>
                 )}
                 
