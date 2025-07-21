@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faStop, faEye, faTrash, faCalendarAlt, faToggleOn, faToggleOff, faExpand, faCompress } from '@fortawesome/free-solid-svg-icons';
+import { faStop, faEye, faTrash, faCalendarAlt, faToggleOn, faToggleOff, faExpand, faCompress, faTachometerAlt, faPlay } from '@fortawesome/free-solid-svg-icons';
+import MonitoringDashboard from './components/MonitoringDashboard';
+import ScheduleModal from './components/ScheduleModal';
         
 const API_URL = process.env.REACT_APP_API_URL || 'http://161.97.78.253:5000/api';
 
@@ -21,6 +23,7 @@ function App() {
     const [scheduledTasks, setScheduledTasks] = useState([]);
     const [schedulesVisible, setSchedulesVisible] = useState(false);
     const [isLogsFullscreen, setIsLogsFullscreen] = useState(false);
+    const [showMonitoring, setShowMonitoring] = useState(true); // Default to showing monitoring dashboard
     const outputRef = useRef(null);
 
     // Fetch initial data
@@ -384,6 +387,20 @@ function App() {
         <div className="App">
             <header className="App-header">
                 <h1>Script Automation Dashboard</h1>
+                <div className="view-toggle">
+                    <button 
+                        className={`toggle-btn ${showMonitoring ? 'active' : ''}`} 
+                        onClick={() => setShowMonitoring(true)}
+                    >
+                        <FontAwesomeIcon icon={faTachometerAlt} /> Monitoring
+                    </button>
+                    <button 
+                        className={`toggle-btn ${!showMonitoring ? 'active' : ''}`} 
+                        onClick={() => setShowMonitoring(false)}
+                    >
+                        <FontAwesomeIcon icon={faPlay} /> Script Runner
+                    </button>
+                </div>
             </header>
             
             {/* Notification component */}
@@ -394,189 +411,201 @@ function App() {
             )}
             
             <main className="container">
-                <div className="control-panel">
-                    <div className="card script-selector">
-                        <h2>Criar Sequência</h2>
-                        <p>Selecione scripts da lista para adicionar à sequência de execução.</p>
-                        <div className="script-list">
-                            {availableScripts.map(script => (
-                                <button key={script} onClick={() => handleScriptSelection(script)} className="script-item">
-                                    {script}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-
-                    <div className="card sequence-display">
-                        <h2>Sequência de Execução</h2>
-                        {selectedScripts.length === 0 ? (
-                            <p className="empty-message">Nenhum script selecionado.</p>
-                        ) : (
-                            <ol className="sequence-list">
-                                {selectedScripts.map((script, index) => (
-                                    <li key={index}>
-                                        <span>{script}</span>
-                                        <button onClick={() => handleRemoveScript(index)} className="remove-btn" title="Remover script">×</button>
-                                    </li>
+                {showMonitoring ? (
+                    <MonitoringDashboard />
+                ) : (
+                <>
+                    <div className="control-panel">
+                        <div className="card script-selector">
+                            <h2>Criar Sequência</h2>
+                            <p>Selecione scripts da lista para adicionar à sequência de execução.</p>
+                            <div className="script-list">
+                                {availableScripts.map(script => (
+                                    <button key={script} onClick={() => handleScriptSelection(script)} className="script-item">
+                                        {script}
+                                    </button>
                                 ))}
-                            </ol>
-                        )}
-                        <div className="sequence-actions">
-                            <button 
-                                onClick={toggleScheduleModal} 
-                                className={`schedule-btn ${scheduleConfig.enabled ? 'scheduled' : ''}`}
-                                title="Configurar agendamento"
-                            >
-                                {scheduleConfig.enabled ? 'Agendado' : 'Agendar'}
-                            </button>
-                            <button 
-                                onClick={handleRunSequence} 
-                                disabled={selectedScripts.length === 0} 
-                                className="run-btn"
-                            >
-                                {scheduleConfig.enabled ? 'Salvar e Agendar' : 'Executar Agora'}
-                            </button>
+                            </div>
                         </div>
-                    </div>
-                </div>
 
-                <div className="card task-monitor">
-                    <h2>Tarefas Ativas e Recentes</h2>
-                    {runningTasks.length === 0 ? (
-                        <p className="empty-message">Nenhuma tarefa em execução.</p>
-                    ) : (
-                        <ul>
-                            {runningTasks.map(task => (
-                                <li key={task.id} className={`task-item-status ${task.status}`}>
-                                    <span><strong>ID:</strong> {task.id.substring(0, 8)}...</span>
-                                    <span><strong>Scripts:</strong> {task.scripts.join(', ')}</span>
-                                    <span className="status">
-                                        {task.status === 'running' ? 'Em execução' : 
-                                         task.status === 'finished' ? 'Concluída' : 
-                                         task.status === 'error' ? 'Erro' : 
-                                         task.status === 'stopped' ? 'Interrompida' : task.status}
-                                    </span>
-                                    <div className="task-actions">
-                                        <button onClick={() => handleViewTask(task.id)} className="view-btn" title="Ver logs">
-                                            <FontAwesomeIcon icon={faEye} /> Ver Logs
-                                        </button>
-                                        {task.status === 'running' && 
-                                            <button onClick={() => handleStopTask(task.id)} className="stop-btn" title="Interromper tarefa">
-                                                <FontAwesomeIcon icon={faStop} /> Parar
-                                            </button>
-                                        }
-                                    </div>
-                                </li>
-                            ))}
-                        </ul>
-                    )}
-                </div>
-                
-                <div className="card schedules-panel">
-                    <div className="schedules-header" onClick={toggleScheduleVisibility}>
-                        <h2>
-                            <FontAwesomeIcon icon={faCalendarAlt} /> Agendamentos
-                            <span className="toggle-icon">
-                                {schedulesVisible ? '▼' : '►'}
-                            </span>
-                        </h2>
-                    </div>
-                    
-                    {schedulesVisible && (
-                        <div className="schedules-content">
-                            {scheduledTasks.length === 0 ? (
-                                <p className="empty-message">Nenhum agendamento configurado.</p>
+                        <div className="card sequence-display">
+                            <h2>Sequência de Execução</h2>
+                            {selectedScripts.length === 0 ? (
+                                <p className="empty-message">Nenhum script selecionado.</p>
                             ) : (
-                                <ul className="schedules-list">
-                                    {scheduledTasks.map(schedule => (
-                                        <li key={schedule.id} className={`schedule-item ${schedule.enabled ? 'enabled' : 'disabled'}`}>
-                                            <div className="schedule-info">
-                                                <h3>Scripts: {schedule.scripts.join(', ')}</h3>
-                                                <p>
-                                                    <strong>Frequência:</strong> {schedule.frequency === 'daily' ? 'Diariamente' : 'Semanal'}
-                                                    {schedule.frequency === 'weekly' && (
-                                                        <span className="schedule-days">
-                                                            {schedule.days.map(day => {
-                                                                const dayMap = {
-                                                                    'monday': 'Seg',
-                                                                    'tuesday': 'Ter',
-                                                                    'wednesday': 'Qua',
-                                                                    'thursday': 'Qui',
-                                                                    'friday': 'Sex',
-                                                                    'saturday': 'Sáb',
-                                                                    'sunday': 'Dom'
-                                                                };
-                                                                return dayMap[day] || day;
-                                                            }).join(', ')}
-                                                        </span>
-                                                    )}
-                                                </p>
-                                                <p><strong>Horário:</strong> {schedule.time}</p>
-                                                <p>
-                                                    <strong>Próxima execução:</strong> {formatDate(schedule.next_run)}
-                                                </p>
-                                                {schedule.last_run && (
-                                                    <p>
-                                                        <strong>Última execução:</strong> {formatDate(schedule.last_run)}
-                                                    </p>
-                                                )}
-                                            </div>
-                                            <div className="schedule-actions">
-                                                <button 
-                                                    onClick={() => handleToggleSchedule(schedule.id)} 
-                                                    className={`toggle-btn ${schedule.enabled ? 'enabled' : 'disabled'}`}
-                                                    title={schedule.enabled ? 'Desativar agendamento' : 'Ativar agendamento'}
-                                                >
-                                                    <FontAwesomeIcon icon={schedule.enabled ? faToggleOn : faToggleOff} />
-                                                    {schedule.enabled ? 'Ativo' : 'Inativo'}
-                                                </button>
-                                                <button 
-                                                    onClick={() => handleDeleteSchedule(schedule.id)} 
-                                                    className="delete-btn"
-                                                    title="Excluir agendamento"
-                                                >
-                                                    <FontAwesomeIcon icon={faTrash} />
-                                                    Excluir
-                                                </button>
-                                            </div>
+                                <ol className="sequence-list">
+                                    {selectedScripts.map((script, index) => (
+                                        <li key={index}>
+                                            <span>{script}</span>
+                                            <button onClick={() => handleRemoveScript(index)} className="remove-btn" title="Remover script">×</button>
                                         </li>
                                     ))}
-                                </ul>
+                                </ol>
                             )}
-                        </div>
-                    )}
-                </div>
-
-                {activeTaskDetail && (
-                    <div className={`card output-viewer ${isLogsFullscreen ? 'fullscreen' : ''}`}>
-                        <div className="output-header">
-                            <h2>Logs da Tarefa: {activeTaskDetail.id.substring(0, 8)}...</h2>
-                            <div className="output-header-actions">
-                                <span className={`status ${activeTaskDetail.status}`}>
-                                    {activeTaskDetail.status === 'running' ? 'Em execução' : 
-                                     activeTaskDetail.status === 'finished' ? 'Concluída' : 
-                                     activeTaskDetail.status === 'error' ? 'Erro' : 
-                                     activeTaskDetail.status === 'stopped' ? 'Interrompida' : activeTaskDetail.status}
-                                </span>
+                            <div className="sequence-actions">
                                 <button 
-                                    onClick={toggleLogsFullscreen} 
-                                    className="fullscreen-btn" 
-                                    title={isLogsFullscreen ? "Sair da tela cheia" : "Ver em tela cheia"}
+                                    onClick={toggleScheduleModal} 
+                                    className={`schedule-btn ${scheduleConfig.enabled ? 'scheduled' : ''}`}
+                                    title="Configurar agendamento"
                                 >
-                                    <FontAwesomeIcon icon={isLogsFullscreen ? faCompress : faExpand} />
+                                    {scheduleConfig.enabled ? 'Agendado' : 'Agendar'}
+                                </button>
+                                <button 
+                                    onClick={handleRunSequence} 
+                                    disabled={selectedScripts.length === 0} 
+                                    className="run-btn"
+                                >
+                                    {scheduleConfig.enabled ? 'Salvar e Agendar' : 'Executar Agora'}
                                 </button>
                             </div>
                         </div>
-                        <pre ref={outputRef} className="output-log">
-                            {renderLogs()}
-                        </pre>
-                        <button onClick={() => {
-                            setActiveTaskDetail(null);
-                            setIsLogsFullscreen(false);
-                        }} className="close-btn">Fechar</button>
                     </div>
-                )}
+
+                    <div className="card task-monitor">
+                        <h2>Tarefas Ativas e Recentes</h2>
+                        {runningTasks.length === 0 ? (
+                            <p className="empty-message">Nenhuma tarefa em execução.</p>
+                        ) : (
+                            <ul>
+                                {runningTasks.map(task => (
+                                    <li key={task.id} className={`task-item-status ${task.status}`}>
+                                        <span><strong>ID:</strong> {task.id.substring(0, 8)}...</span>
+                                        <span><strong>Scripts:</strong> {task.scripts.join(', ')}</span>
+                                        <span className="status">
+                                            {task.status === 'running' ? 'Em execução' : 
+                                             task.status === 'finished' ? 'Concluída' : 
+                                             task.status === 'error' ? 'Erro' : 
+                                             task.status === 'stopped' ? 'Interrompida' : task.status}
+                                        </span>
+                                        <div className="task-actions">
+                                            <button onClick={() => handleViewTask(task.id)} className="view-btn" title="Ver logs">
+                                                <FontAwesomeIcon icon={faEye} /> Ver Logs
+                                            </button>
+                                            {task.status === 'running' && 
+                                                <button onClick={() => handleStopTask(task.id)} className="stop-btn" title="Interromper tarefa">
+                                                    <FontAwesomeIcon icon={faStop} /> Parar
+                                                </button>
+                                            }
+                                        </div>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    </div>
+                </>
+                )}  {/* Close the conditional rendering for script runner */}
                 
+                {!showMonitoring && (
+                <>
+                    <div className="card schedules-panel">
+                        <div className="schedules-header" onClick={toggleScheduleVisibility}>
+                            <h2>
+                                <FontAwesomeIcon icon={faCalendarAlt} /> Agendamentos
+                                <span className="toggle-icon">
+                                    {schedulesVisible ? '▼' : '►'}
+                                </span>
+                            </h2>
+                        </div>
+                        
+                        {schedulesVisible && (
+                            <div className="schedules-content">
+                                {scheduledTasks.length === 0 ? (
+                                    <p className="empty-message">Nenhum agendamento configurado.</p>
+                                ) : (
+                                    <ul className="schedules-list">
+                                        {scheduledTasks.map(schedule => (
+                                            <li key={schedule.id} className={`schedule-item ${schedule.enabled ? 'enabled' : 'disabled'}`}>
+                                                <div className="schedule-info">
+                                                    <h3>Scripts: {schedule.scripts.join(', ')}</h3>
+                                                    <p>
+                                                        <strong>Frequência:</strong> {schedule.frequency === 'daily' ? 'Diariamente' : 'Semanal'}
+                                                        {schedule.frequency === 'weekly' && (
+                                                            <span className="schedule-days">
+                                                                {schedule.days.map(day => {
+                                                                    const dayMap = {
+                                                                        'monday': 'Seg',
+                                                                        'tuesday': 'Ter',
+                                                                        'wednesday': 'Qua',
+                                                                        'thursday': 'Qui',
+                                                                        'friday': 'Sex',
+                                                                        'saturday': 'Sáb',
+                                                                        'sunday': 'Dom'
+                                                                    };
+                                                                    return dayMap[day] || day;
+                                                                }).join(', ')}
+                                                            </span>
+                                                        )}
+                                                    </p>
+                                                    <p><strong>Horário:</strong> {schedule.time}</p>
+                                                    <p>
+                                                        <strong>Próxima execução:</strong> {formatDate(schedule.next_run)}
+                                                    </p>
+                                                    {schedule.last_run && (
+                                                        <p>
+                                                            <strong>Última execução:</strong> {formatDate(schedule.last_run)}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                                <div className="schedule-actions">
+                                                    <button 
+                                                        onClick={() => handleToggleSchedule(schedule.id)} 
+                                                        className={`toggle-btn ${schedule.enabled ? 'enabled' : 'disabled'}`}
+                                                        title={schedule.enabled ? 'Desativar agendamento' : 'Ativar agendamento'}
+                                                    >
+                                                        <FontAwesomeIcon icon={schedule.enabled ? faToggleOn : faToggleOff} />
+                                                        {schedule.enabled ? 'Ativo' : 'Inativo'}
+                                                    </button>
+                                                    <button 
+                                                        onClick={() => handleDeleteSchedule(schedule.id)} 
+                                                        className="delete-btn"
+                                                        title="Excluir agendamento"
+                                                    >
+                                                        <FontAwesomeIcon icon={faTrash} />
+                                                        Excluir
+                                                    </button>
+                                                </div>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {activeTaskDetail && (
+                        <div className={`card output-viewer ${isLogsFullscreen ? 'fullscreen' : ''}`}>
+                            <div className="output-header">
+                                <h2>Logs da Tarefa: {activeTaskDetail.id.substring(0, 8)}...</h2>
+                                <div className="output-header-actions">
+                                    <span className={`status ${activeTaskDetail.status}`}>
+                                        {activeTaskDetail.status === 'running' ? 'Em execução' : 
+                                         activeTaskDetail.status === 'finished' ? 'Concluída' : 
+                                         activeTaskDetail.status === 'error' ? 'Erro' : 
+                                         activeTaskDetail.status === 'stopped' ? 'Interrompida' : activeTaskDetail.status}
+                                    </span>
+                                    <button 
+                                        onClick={toggleLogsFullscreen} 
+                                        className="fullscreen-btn" 
+                                        title={isLogsFullscreen ? "Sair da tela cheia" : "Ver em tela cheia"}
+                                    >
+                                        <FontAwesomeIcon icon={isLogsFullscreen ? faCompress : faExpand} />
+                                    </button>
+                                </div>
+                            </div>
+                            <pre ref={outputRef} className="output-log">
+                                {renderLogs()}
+                            </pre>
+                            <button onClick={() => {
+                                setActiveTaskDetail(null);
+                                setIsLogsFullscreen(false);
+                            }} className="close-btn">Fechar</button>
+                        </div>
+                    )}
+                </>
+                )} {/* Close the conditional rendering for schedules panel */}
+                
+                {!showMonitoring && (
+                <>
                 {/* Schedule Modal */}
                 {scheduleModalOpen && (
                     <div className="modal-overlay">
@@ -653,6 +682,8 @@ function App() {
                         </div>
                     </div>
                 )}
+                </>
+                )} {/* Close the conditional rendering for schedule modal */}
             </main>
         </div>
     );

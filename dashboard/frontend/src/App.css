@@ -82,6 +82,9 @@ body::before {
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
     position: relative;
     z-index: 10;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
 }
 
 .App-header h1 {
@@ -92,6 +95,36 @@ body::before {
     background-clip: text;
     -webkit-text-fill-color: transparent;
     margin: 0;
+}
+
+.view-toggle {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.toggle-btn {
+    background: var(--tertiary-bg);
+    border: 1px solid var(--glass-border);
+    color: var(--secondary-text);
+    padding: 0.5rem 1rem;
+    border-radius: var(--button-border-radius);
+    cursor: pointer;
+    transition: all var(--transition-speed);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+}
+
+.toggle-btn.active {
+    background: var(--accent-transparent);
+    color: var(--accent-color);
+    border-color: var(--accent-color);
+}
+
+.toggle-btn:hover {
+    background: var(--glass-highlight);
+    transform: translateY(-2px);
 }
 
 .container {

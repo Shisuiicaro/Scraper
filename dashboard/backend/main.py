@@ -9,6 +9,9 @@ from flask_cors import CORS
 from apscheduler.schedulers.background import BackgroundScheduler
 import uuid
 
+# Import monitoring module
+from monitoring import get_monitoring_stats, get_recent_games
+
 app = Flask(__name__)
 CORS(app, origins="*")
 
