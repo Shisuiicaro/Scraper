@@ -141,6 +141,27 @@ def get_scripts():
         print(f"Error in get_scripts: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/monitoring-stats', methods=['GET'])
+def monitoring_stats():
+    """Get monitoring statistics for the dashboard"""
+    try:
+        stats = get_monitoring_stats()
+        return jsonify(stats)
+    except Exception as e:
+        print(f"Error in monitoring_stats: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/recent-games', methods=['GET'])
+def recent_games():
+    """Get recent games with images for the dashboard"""
+    try:
+        limit = request.args.get('limit', default=10, type=int)
+        games = get_recent_games(limit)
+        return jsonify(games)
+    except Exception as e:
+        print(f"Error in recent_games: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/run-task', methods=['POST'])
 def run_task():
     data = request.json
